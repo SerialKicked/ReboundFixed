@@ -5,4 +5,4 @@ ReBound: Encounter 1.7 Fixed.
 + Massive performance improvements in spawning logic
 + More stable overall
 
-Savegame Compatible with nomal Rebound: Encounter 1.7 (not with older versions)
+Savegame Compatible with nomal Rebound: Encounter 1.7 (not with more recent versions)
