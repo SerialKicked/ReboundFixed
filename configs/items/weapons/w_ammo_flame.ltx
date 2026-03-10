@@ -1,0 +1,48 @@
+;============================================================================
+;							Flamethrower liquid
+;============================================================================
+[ammo_flw]:ammo_base
+GroupControlSection	= spawn_group
+discovery_dependency =
+$prefetch 		= 64
+$spawn					= "weapons\ammo\ammo-flw" 
+class					= AMMO_S
+visual					= dynamics\weapons\wpn_ammo\ammo_flw.ogf
+inv_name				= st_m2_gas_canister
+inv_name_short			= st_m2_gas_canister
+description				= st_m2_gas_canister_descr
+take_sound				= device_take
+cost					= 12000
+box_size				= 300
+icons_texture = ui\flame
+inv_weight				= 2.9
+inv_grid_width    		= 2
+inv_grid_height    		= 1
+inv_grid_x				= 16
+inv_grid_y				= 42
+k_dist					= 0.35
+k_disp					= 1.15
+k_hit					= 0.10
+k_impulse 				= 0.1
+k_ap					= 0.2
+impair					= 1
+buck_shot				= 10
+wm_size					= 0.0001
+k_air_resistance		= 15
+material				= objects\bullet_fake
+wallmark_section		= explosion_marks
+
+tier                                     = 5
+;============================================================================
+[ammo_flamer]:ammo_flw
+$spawn					= "weapons\ammo\ammo_flamer"
+visual					= dynamics\weapons\wpn_ammo\ammo_flamer.ogf	
+inv_name				= st_f35_gas_canister
+inv_name_short			= st_f35_gas_canister
+description				= st_f35_gas_canister_descr
+cost					= 13000
+inv_weight				= 3.2
+icons_texture = ui\flame
+inv_grid_x				= 18
+inv_grid_y				= 42
+k_hit					= 0.12

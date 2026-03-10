@@ -1,0 +1,2830 @@
+-- It spawns on smart terrains available for mutants if the current population of the smart is 0 or if no default ReSpawn Mutants are online on this smart.
+-- ALL CREDIT GOES TO bvcx/xcvb for the original Night Mutants Mod
+-- Another person I want to mention is Music_Hours for making Day Stalkers I've learned so much from them. Without them, this project will never exist.
+-- Thanks to Hades@DK and his amazing RE:Spawn mutants. Without his work, this mod has no purpose
+
+-- Configuration variables
+-- If you don't use MCM then just modify the values here 
+
+-- Define constants for magic numbers
+
+
+local in_game_hour_multiplier = 60
+
+local MAX_SMART_ID = 65534
+
+-- MCM values
+local spawn_time_delay_min = 2    -- Minimum game minute delay for the spawn interval
+local spawn_time_delay_max = 6    -- Maximum game minute delay for the spawn interval
+local safe_radius = 60             -- No spawning within this player's radius
+local enable_spawn_reserve = false -- toggles smart population reserving
+local enable_ignore_smart_population = false -- toggles smart population ignored during spawning
+local enable_all_maps_spawning = true -- toggle option to spawn specific mutants on all maps
+local enable_boss_is_night_only = true
+local day_start = 6                -- Time at which mutants start to spawn
+local day_end = 20
+local active_boss_mutant = 0
+local spawn_reserve = 1
+local enable_goodwill_penalty = true
+local boss_spawn_probability = 30
+local boss_spawn_attempted = 0
+local predator_spawn_probability = 40
+local wipe_mutants_on_level_change = true
+local enable_debug = false
+local max_active_spawns = 0
+local smart_terrain_exemptions = {}
+local enable_random_vanilla_mutants = true -- toggle option to spawn random vanilla mutants on smart terrains
+-- Define a unified table for boss spawn statuses
+
+local active_spawns = {}
+
+-- Tables to store data
+local squads_to_spawn = {}          -- List of squad sections to spawn
+local available_smart_terrains = {} -- List of available smart terrains
+
+local ray_table = {}
+local ray_count_circle = 16
+local ray_count_vertical = 8
+local actor_in_safe_zone = false
+local actor_is_indoors = false
+local is_safe_zone = false
+local actor_is_near_lighted_campfire = false
+local mutant_id_attacked = {}
+local player_safe = false
+local installed_respawn_mutants = {}
+local spawn_accumulator = 0
+local accumulator_threshold = 30
+local enable_accumulator_reset_on_npc_attack = true
+local passive_spook_distance = 10
+
+-- time management
+local respawn_delay = nil
+local marked_times = {} -- table for unified time management
+local cooldowns = {}
+
+-- Define a timer variable and a delay duration
+local previous_attacker_name = ""
+local number_of_spawn_attempts = 0
+local plugin_file_name = "plugins\\rebound_encounters.ltx"
+local difficulty_value = 0
+local difficulty_level = 0
+local squads_available_this_rank = {}
+local passives_available = {}
+local passives_to_spawn = {}
+local passive_fauna = {}
+local active_passive_squad = {}
+local passive_spawn_delay = 10
+local special_spawns = {}
+local last_sheltered_status = false
+
+local map_exemptions = 
+{
+    "l05_bar", "l03u_agr_underground", "fake_start",  "jupiter_underground", "l08u_brainlab", "l04u_labx18", "l10u_bunker", "labx8", "l12u_control_monolith", "l13u_warlab", "l12u_sarcofag", "bunker_a1"
+}
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- MCM
+
+function fetch_values()
+    spawn_time_delay_min = rebound_encounters_mcm.get_config("spawn_time_delay_min")
+    spawn_time_delay_max = rebound_encounters_mcm.get_config("spawn_time_delay_max")
+    safe_radius = rebound_encounters_mcm.get_config("safe_radius")
+    day_start = rebound_encounters_mcm.get_config("day_start")
+    day_end = rebound_encounters_mcm.get_config("day_end")
+    boss_spawn_probability = rebound_encounters_mcm.get_config("boss_spawn_probability")
+    predator_spawn_probability = rebound_encounters_mcm.get_config("predator_spawn_probability")
+    wipe_mutants_on_level_change = rebound_encounters_mcm.get_config("wipe_mutants_on_level_change")
+    enable_ignore_smart_population = rebound_encounters_mcm.get_config("enable_ignore_smart_population")
+    enable_all_maps_spawning = rebound_encounters_mcm.get_config("enable_all_maps_spawning")
+    enable_boss_is_night_only = rebound_encounters_mcm.get_config("enable_boss_is_night_only")
+    enable_spawn_reserve = rebound_encounters_mcm.get_config("enable_spawn_reserve")
+    enable_goodwill_penalty = rebound_encounters_mcm.get_config("enable_goodwill_penalty")
+    enable_debug = rebound_encounters_mcm.get_config("enable_debug")
+    enable_random_vanilla_mutants = rebound_encounters_mcm.get_config("enable_random_vanilla_mutants")
+    accumulator_threshold = rebound_encounters_mcm.get_config("accumulator_threshold")
+    enable_accumulator_reset_on_npc_attack = rebound_encounters_mcm.get_config("enable_accumulator_reset_on_npc_attack")
+
+    if enable_spawn_reserve then
+        spawn_reserve = 1
+    else
+        spawn_reserve = 0
+    end
+
+    local sheltered_indicator = rebound_encounters_mcm.get_config("enable_sheltered_indicator")
+    if sheltered_indicator == true then
+        add_safe_zone_indicator()
+    else
+        remove_safe_zone_indicator()
+    end
+
+    difficulty_level = level.get_game_difficulty()
+    
+    if difficulty_level == 0 then -- Novice
+        difficulty_value = 0.3
+    elseif difficulty_level == 1 then -- Stalker
+        difficulty_value = 0.4
+    elseif difficulty_level == 2 then -- Veteran
+        difficulty_value = 0.5
+    elseif difficulty_level == 3 then -- Master
+        difficulty_value = 0.6
+    end
+
+    collect_squads_to_spawn()
+end
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- New function to collect squads to spawn
+function collect_squads_to_spawn()
+    squads_to_spawn = {} -- clear table first
+    populate_squads_available_this_rank()
+    collect_squad_sections("respawn_" .. tostring(level.name())) -- retrieve level specific squads
+    if enable_all_maps_spawning then
+        collect_squad_sections("respawn_mutant") -- add mutants common to all levels
+    end
+end
+
+-- update active boss mutant count from active_spawns
+function count_active_boss_mutants()
+    local count = 0
+    for _, spawn in ipairs(active_spawns) do
+        if spawn.is_boss_mutant then
+            count = count + 1
+        end
+    end
+    active_boss_mutant = count
+end
+
+-- Function to attempt spawning mutants
+function try_to_spawn()
+    if is_current_map_exempt() then
+        pr("!This map is exempt from spawns")
+        return
+    end
+
+    pr("--------------------------------------------------------")
+    pr("-- RE:Bound Attempting to Spawn in %s","respawn_" .. tostring(level.name()))
+    
+    -- Collect and add section names
+    -- Check if the table is empty
+    if table_is_empty(squads_to_spawn) then
+        pr("No squads to spawn. Ending script.")
+        return  -- Ends the script execution
+    end
+
+    count_active_boss_mutants()
+    
+    if enable_debug then
+        -- print what squads are available for spawning on this level
+        pr("-- Mutants ready for spawning %s --", is_day() and "today" or "tonight")
+        local squad_name = ""
+        for i, squad in ipairs(squads_to_spawn) do
+            squad_name = squad_name .. string.format("[%s] %s\t.  ", i, squad.sec)
+            
+            if i % 6 == 0 or i == #squads_to_spawn then
+                local full_string = squad_name
+                local to_remove = "respawn_"
+                local result = string.gsub(full_string, to_remove, "")
+                pr(result)
+                squad_name = ""
+            end
+        end
+
+        -- Print total number of available smart terrains for spawning
+        pr("Total available smart terrains: %s", count_available_smart_terrains())
+    end
+
+    -- Start of more checks before spawning --
+    -- adjust spawns depending on game difficulty
+    local player_rank_value = get_rank_value(db.actor:character_rank())
+    max_active_spawns = 0
+    max_active_spawns = round(count_available_smart_terrains() * difficulty_value) -- spawn max based on smart terrain population on map
+    if max_active_spawns < 4 then
+        max_active_spawns = 4
+    end
+    max_active_spawns = max_active_spawns + player_rank_value
+    number_of_spawn_attempts = max_active_spawns
+
+    number_of_spawn_attempts = number_of_spawn_attempts
+
+    local surge_active = surge_started()
+
+    if number_of_spawn_attempts == 0 or surge_active then  -- If no attempts, exempt, or surge active
+        pr("Spawn attempts: %s, Surge active: %s", number_of_spawn_attempts, surge_active)
+        return
+    else  -- Otherwise spawn for how many times "number_of_spawn_attempts" allows for this spawn cycle
+        if number_of_spawn_attempts > 1 then
+            pr("Spawning mutants: %s attempts", number_of_spawn_attempts)
+        else
+            pr("Spawning mutants: %s attempt", number_of_spawn_attempts)
+        end
+
+        for i = 1, number_of_spawn_attempts do
+            -- Check maximum active spawns before each attempt
+            local current_active_spawns = #active_spawns
+            if current_active_spawns >= max_active_spawns then
+                pr("Maximum active spawns reached: %s", count_available_smart_terrains())
+                break
+            else
+                spawn_mutants()  -- Call function to spawn mutants 
+            end
+        end
+    end
+    boss_spawn_attempted = 0 -- reset the flag for boss spawn attempt
+    -- End of checks
+
+    -- Print total count of active spawns after spawning
+    if enable_debug then
+        pr("-- Active Spawns Details --")
+        local total_night_mutants = 0
+        local total_predator_mutants = 0
+
+        for _, spawn in ipairs(active_spawns) do
+            local squad = alife_object(spawn.mutant_id)
+            local exists = squad and "exists" or "does not exist"
+            
+            pr("Section: %s, Night Mutant: %s, Boss Mutant: %s, Predator Mutant: %s, Status: %s", 
+                spawn.sec, tostring(spawn.is_night_mutant), tostring(spawn.is_boss_mutant), tostring(spawn.is_predator_mutant), exists)
+            
+            if squad then
+                if spawn.is_night_mutant then
+                    total_night_mutants = total_night_mutants + 1
+                end
+                
+                if spawn.is_predator_mutant then
+                    total_predator_mutants = total_predator_mutants + 1
+                end
+            end
+        end
+
+        pr("Total number of active spawns: %s, Night Mutants: %s, Predator Mutants: %s", #active_spawns, total_night_mutants, total_predator_mutants)
+        pr("--------------------------------------------------------")
+    end
+end
+
+-- test spawn mutant Function
+-- Helper function to find a random boss mutant squad
+function find_random_boss()
+    local boss_squads = {}
+    for _, squad in ipairs(squads_to_spawn) do
+        if squad.is_boss_mutant then
+            table.insert(boss_squads, squad)
+        end
+    end
+    return #boss_squads > 0 and boss_squads[math.random(1, #boss_squads)] or nil
+end
+
+-- Helper function to find a random non-boss mutant squad
+function find_random_non_boss()
+    local non_boss_squads = {}
+    for _, squad in ipairs(squads_to_spawn) do
+        if not squad.is_boss_mutant then
+            table.insert(non_boss_squads, squad)
+        end
+    end
+    return #non_boss_squads > 0 and non_boss_squads[math.random(1, #non_boss_squads)] or nil
+end
+
+-- Main spawn mutants function
+function spawn_mutants()
+    local has_spawned = false
+
+    -- Randomly select a boss and a non-boss squad
+    local boss_random_squad = find_random_boss()
+    local random_squad = find_random_non_boss()
+    local chosen_squad = nil
+
+    -- Loop through available smart terrains to find a suitable one
+    for _, t in pairs(available_smart_terrains) do
+        for i = 1, #t do
+            local selected_smart_id = t[i]
+            local simboard_t = SIMBOARD.smarts[selected_smart_id]
+            local smart = simboard_t and simboard_t.smrt
+
+            if smart then
+                --local smart_cur_pop = simboard_t.population
+                --local smart_max_pop = smart.max_population - spawn_reserve
+
+                -- Check if a spawn already exists in the given smart
+                local spawn_exists = false
+                for _, spawn in ipairs(active_spawns) do
+                    if spawn.smart_id == selected_smart_id then
+                        spawn_exists = true
+                        break
+                    end
+                end
+
+                -- Check population limits or override if enabled
+                --local allow_pop_spawn = smart_cur_pop < smart_max_pop
+                --if enable_ignore_smart_population then
+                --    allow_pop_spawn = true
+                --end
+
+                -- If conditions are met, proceed to attempt spawning
+                if not has_spawned and not spawn_exists and se_obj_outside_spawn_radius(smart, safe_radius) then
+                    local spawn_boss_chance = math.random(1, 100)
+                    local squad_sec = nil
+
+                    -- Decide if we should spawn a boss mutant
+                    if (active_boss_mutant == 0) and (boss_random_squad and (spawn_boss_chance <= boss_spawn_probability)) and (boss_spawn_attempted < 1) and not cooldown_timer("check", "boss_spawn") then
+                        chosen_squad = boss_random_squad
+                        squad_sec = boss_random_squad.sec
+                        boss_spawn_attempted = boss_spawn_attempted + 1 -- count the boss spawn attempt
+                        cooldown_timer("mark", "boss_spawn", 360)
+                    else
+                        chosen_squad = random_squad
+                        squad_sec = random_squad and random_squad.sec
+                    end
+
+                    -- Attempt to create the squad in the selected smart
+                    local squad = squad_sec and SIMBOARD:create_squad(smart, squad_sec)
+                    
+                    if squad then
+                        -- Handle predator flag for the squad
+                        local spawn_is_predator = (math.random(1, 100) <= predator_spawn_probability)
+                        if chosen_squad.is_predator_mutant or spawn_is_predator then
+                            chosen_squad.is_predator_mutant = true
+                        end
+
+                        -- Add the new spawn to active_spawns
+                        table.insert(active_spawns, { 
+                            smart_id = selected_smart_id, 
+                            mutant_id = squad.id, 
+                            level_name = level.name(), 
+                            sec = squad_sec,
+                            is_night_mutant = chosen_squad.is_night_mutant, 
+                            is_boss_mutant = chosen_squad.is_boss_mutant,
+                            is_predator_mutant = chosen_squad.is_predator_mutant
+                        })
+
+                        -- Update boss count and send message if a boss spawned
+                        if chosen_squad.is_boss_mutant then
+                            active_boss_mutant = 1
+                            game_timer("mark", 4) -- set timer till next boss warning message
+                            local location_description = dynamic_news_helper.GetPointDescription(squad)
+                            local phrase_keys = get_phrase_keys("rebound_encounters_boss_spawn_warnings")
+                            local translated_text = ""
+                            -- Select a random key and retrieve its translation
+                            if #phrase_keys > 0 then
+                                local random_key = phrase_keys[math.random(#phrase_keys)]
+                                translated_text = game.translate_string(random_key)
+                            end
+                            if db.actor then
+                                local boss_name = squad:name()
+                                boss_name = boss_name:match("respawn_(%a+)")
+                                boss_name = "respawn_mutant_" .. boss_name
+                                boss_name = game.translate_string(boss_name)
+                                local message = string.format(translated_text, boss_name, location_description)
+                                news_manager.send_tip(db.actor, message, nil, nil, 30000)
+                            else
+                                pr("Warning: Unable to send message, db.actor is nil")
+                            end
+                        else
+                            local actor_rank_value = get_rank_value(db.actor:character_rank()) -- rank value
+                            local squad_size_by_level = tonumber(read_ltx_section(plugin_file_name, "squad_size_by_level", level.name())) or 3 -- set hayzed squad size by level or default to 3 if not specified
+                            if squad:section_name() == "respawn_hayzed" then
+                                add_squad_members(squad, squad_size_by_level, selected_smart_id)
+                            else
+                                if squad:npc_count() < actor_rank_value then
+                                    if check_ltx_contains_value(plugin_file_name, "normal_mutants", squad:section_name()) or check_ltx_contains_value(plugin_file_name, "weak_mutants", squad:section_name()) then -- check if squad is weak or normal tier
+                                        local half_squad = half_max_squad_size(actor_rank_value)
+                                        add_squad_members(squad, half_squad, selected_smart_id)
+                                    end
+                                end
+                            end
+                        end
+                        -- Set has_spawned to true and exit loops to stop further spawning attempts
+                        has_spawned = true
+                        break
+                    end
+                end
+            end
+        end
+        if has_spawned then break end  -- Exit the main loop if a spawn occurred
+    end
+end
+
+function half_max_squad_size(max_squad_size)
+    return math.floor(max_squad_size / 2)
+  end
+
+function add_squad_members(squad, max_squad_size, smart_id)
+    local max_squad_count
+    local squad_count = squad:npc_count()
+    max_squad_count = math.random(squad_count, max_squad_size)
+    pr("-- RE:Bound changed squad size of %s from  %s to %s", squad:section_name(), tostring(squad_count), tostring(max_squad_count))
+    local commander = alife_object(squad:commander_id())
+    if commander then
+        while squad:npc_count() < max_squad_count do
+
+            local pos = commander.position
+            local lvid = commander.m_level_vertex_id
+            local gvid = commander.m_game_vertex_id
+
+            local squad_smart = smart_id and SIMBOARD.smarts[smart_id].smrt
+
+            local random_spawn = ini_sys:r_string_ex(squad:section_name(), "npc_random")
+
+            random_spawn = parse_names(random_spawn)
+            local random_sec = random_spawn[math.random(1, #random_spawn)]
+
+            local new_member_id = squad:add_squad_member(random_sec, pos, lvid, gvid)
+            local se_obj = new_member_id and alife_object(new_member_id)
+            if se_obj then
+                squad_smart:register_npc(se_obj)
+                SIMBOARD:setup_squad_and_group(se_obj)
+				-- Update the squad
+				squad:update()
+            end
+
+        end
+    end
+end
+
+function delete_mutants()
+    -- for normal mutants
+    for idx = #active_spawns, 1, -1 do
+        local spawn = active_spawns[idx]
+        local squad = alife_object(spawn.mutant_id)
+
+        if squad then
+            if squad.remove_squad and squad.get_script_target then
+                pr("squad id: %s marked for deletion", spawn.mutant_id)
+                
+                -- Release the squad by mutant_id
+                alife_release(squad)
+                pr("RE:Bound squad id: %s released", spawn.mutant_id)
+
+                -- Decrement active_boss_mutant if a boss mutant is deleted
+                if spawn.is_boss_mutant then
+                    active_boss_mutant = 0
+                end
+
+                -- Remove the entry from active_spawns
+                table.remove(active_spawns, idx)
+            else
+                pr("Warning: squad id %s is not a valid squad object", spawn.mutant_id)
+            end
+        else
+            pr("Warning: squad id %s does not exist", spawn.mutant_id)
+        end
+    end
+
+    -- Confirm active_spawns table status after cleanup
+    pr(string.format("Active spawns remaining: %d", #active_spawns))
+    
+    -- for passive mutants
+    for idx = #active_passive_squad, 1, -1 do
+        local spawn = active_passive_squad[idx]
+        local se_npc = alife_object(spawn.npc_id)
+
+        if se_npc then
+            alife_release(se_npc)
+            table.remove(active_passive_squad, idx)
+        else
+            pr("Warning: squad id %s does not exist", spawn.npc_id)
+        end
+    end
+    active_spawns = {}
+    active_passive_squad = {}
+    mutant_id_attacked = {}
+end
+
+
+
+-- Callback function when a server entity unregisters
+function server_entity_on_unregister(obj)
+    -- for normal mutants
+    for idx, spawn in ipairs(active_spawns) do
+        if obj.id == spawn.mutant_id then
+            pr("-- RE:Bound removing squad_id: %s from table", spawn.mutant_id)
+            
+            -- Decrement active_boss_mutant if a boss mutant is unregistered
+            if spawn.is_boss_mutant then
+                active_boss_mutant = 0
+                
+                -- Send a message to the player
+                if db.actor then
+                    local phrase_keys = get_phrase_keys("rebound_encounters_boss_spawn_eliminated")
+                    local translated_text = ""
+                    -- Select a random key and retrieve its translation
+                    if #phrase_keys > 0 then
+                        local random_key = phrase_keys[math.random(#phrase_keys)]
+                        translated_text = game.translate_string(random_key)
+                    end
+                    
+                    -- Remove "respawn_" prefix and numbers at the end, then capitalize the first letter
+                    local boss_name = obj:name()
+                    boss_name = boss_name:match("respawn_(%a+)")
+                    boss_name = "respawn_mutant_" .. boss_name
+                    boss_name = game.translate_string(boss_name)
+                    
+                    -- Get the location description using dynamic_news_helper
+                    local location_description = dynamic_news_helper.GetPointDescription(obj)
+                    
+                    -- Format the message
+                    local message = string.format(translated_text, boss_name, location_description)
+                    
+                    news_manager.send_tip(db.actor, message, nil, nil, 30000)
+                else
+                    pr("Warning: Unable to send message, db.actor is nil")
+                end
+            end
+            table.remove(active_spawns, idx)
+        end
+    end
+
+    -- for passive mutants
+    if active_passive_squad then
+        for idx = #active_passive_squad, 1, -1 do
+            local spawn = active_passive_squad[idx]
+            if obj.id == spawn.squad_id then
+                pr("-- RE:Bound removing passive squad_id: %s from table", spawn.squad_id)
+                table.remove(active_passive_squad, idx)
+            end
+        end
+    end
+end
+
+-- Save smart terrains that can spawn ReSpawn Mutants. Changed to not use list of exempted smart terrains.
+function save_respawn_smarts()
+    available_smart_terrains = {}
+    local current_map_name = level.name()
+
+    for i = 1, MAX_SMART_ID do
+        local smart = alife_object(i)
+        if smart and (smart:clsid() == clsid.smart_terrain) then
+            local smart_level_name = get_se_obj_level_name(smart)
+
+            if smart_level_name == current_map_name then
+                local smart_cur_pop = count_squads_in_radius("all", smart.position, 40) -- Count all squads
+                local outside_safe_radius = se_obj_outside_spawn_radius(smart, safe_radius)
+
+                if smart_cur_pop == 0 and outside_safe_radius then
+                    available_smart_terrains[smart_level_name] = available_smart_terrains[smart_level_name] or {}
+                    table.insert(available_smart_terrains[smart_level_name], smart.id)
+                end
+            end
+        end
+    end
+end
+
+function get_list_from_ltx(file_name, section_name)
+    local ini_config = ini_file(file_name)
+    local result = {}
+    local line_count = ini_config:line_count(section_name)
+    for i = 0, line_count - 1 do
+        local _, id = ini_config:r_line_ex(section_name, i, "", "") -- Only read the ID, ignore the value
+        if id then
+            table.insert(result, id)
+        end
+    end
+
+    return result -- Return the collected list
+end
+
+function check_ltx_contains_value(filename, section, target_value)
+    local ini = ini_file(filename)
+    if not ini then 
+        pr("Error: Could not load LTX file: " .. filename)
+        return false 
+    end -- Handle file not found
+
+    local line_count = ini:line_count(section)
+    for i = 0, line_count - 1 do
+        local id, key, value = ini:r_line_ex(section, i, "", "") --Get only the key part
+        if key and string.find(key, target_value) then -- Check if target_value is part of the key
+            return true -- Target value found
+        end
+    end
+    return false -- Target value not found
+end
+
+-- Collect passive squads to spawn on current level
+function collect_passive_squad_sections()
+    -- populate table of passive squads that should be available
+    local squad_tag = "respawn_" .. tostring(level.name())
+    local ini_config = ini_file(plugin_file_name)
+    passives_available = {}
+    passives_to_spawn = {}
+    passive_fauna = {}
+
+    -- MCM CHECK BEFORE POPULATING passives_available
+    local temp_passives_available = {}
+    local line_count = ini_config:line_count("passive_fauna")
+    for i = 0, line_count - 1 do
+        local result, id, value = ini_config:r_line_ex("passive_fauna", i, "", "")
+        if id then
+            local mutant_enabled = false
+            if string.find(id, "respawn_") then
+                mutant_enabled = rebound_encounters_mcm.get_config(id)
+                if mutant_enabled == nil then
+                    mutant_enabled = false -- default to false if not found in mcm (not installed)
+                end
+            end
+            if mutant_enabled then
+                table.insert(temp_passives_available, id)
+            end
+        end
+    end
+    passives_available = temp_passives_available
+
+    ini_sys:section_for_each(function(sec)
+        local respawn_mutant = ini_sys:r_bool_ex(sec, squad_tag)
+        
+        -- Check if section already exits and if it's in passives_available
+        if respawn_mutant then
+            local existing_section = nil
+            for _, squad in ipairs(passives_to_spawn) do
+                if squad.sec == sec then
+                    existing_section = squad
+                    break
+                end
+            end
+
+            -- Added condition to check if sec exists in passives_available
+            local is_passive_available = false
+            for _, available_sec in ipairs(passives_available) do
+                if sec == available_sec then
+                    is_passive_available = true
+                    break
+                end
+            end
+
+            if not existing_section and is_passive_available then
+                -- get the value of npc_random
+                local npc_random = ini_sys:r_string_ex(sec, "npc_random")
+                local parsed_npcs = {}
+                if npc_random then
+                    parsed_npcs = parse_names(npc_random)
+                else
+                    pr("Warning: 'npc_random' not found in section '%s'", sec)
+                end        
+                table.insert(passives_to_spawn, {
+                    sec = sec,
+                })
+                table.insert(passive_fauna, {
+                    npcs = parsed_npcs
+                })
+            end
+        end
+    end)
+end
+
+function populate_squads_available_this_rank()
+    -- populate table of squads that should be available at current rank first
+    local ini_config = ini_file(plugin_file_name)
+    local player_rank_value = get_rank_value(db.actor:character_rank())
+    local line_count = 0
+    squads_available_this_rank = {} -- clear table first
+
+    -- add weak mutants first
+    line_count = ini_config:line_count("weak_mutants")
+    pr("- weak mutants count: " .. line_count)
+    for i = 0, line_count - 1 do
+        local result, id, value = ini_config:r_line_ex("weak_mutants", i, "", "")
+        if id then
+            table.insert(squads_available_this_rank, id)
+        end
+    end
+
+    -- add boss mutants
+    line_count = ini_config:line_count("boss_mutants")
+    pr("- boss mutants count: " .. line_count)
+    for i = 0, line_count - 1 do
+        local result, id, value = ini_config:r_line_ex("boss_mutants", i, "", "")
+        if id then
+            table.insert(squads_available_this_rank, id)
+        end
+    end
+
+    -- add normal mutants if rank value is 3 or greater
+    if player_rank_value > 2 then
+        line_count = ini_config:line_count("normal_mutants")
+        pr("- normal mutants count: " .. line_count)
+        for i = 0, line_count - 1 do
+            local result, id, value = ini_config:r_line_ex("normal_mutants", i, "", "")
+            if id then
+                table.insert(squads_available_this_rank, id)
+            end
+        end
+    end
+    -- add strong mutants if rank value is greater or equal to 5
+    if player_rank_value >= 5 then
+        line_count = ini_config:line_count("strong_mutants")
+        pr("- strong mutants count: " .. line_count)
+        for i = 0, line_count - 1 do
+            local result, id, value = ini_config:r_line_ex("strong_mutants", i, "", "")
+            if id then
+                table.insert(squads_available_this_rank, id)
+            end
+        end
+    end
+end
+
+-- Collect and add section names based on current map and player rank
+function collect_squad_sections(squad_tag)
+    local mutant_enabled = false
+
+    ini_sys:section_for_each(function(sec)
+        local respawn_mutant = ini_sys:r_bool_ex(sec, squad_tag)
+        local is_night_mutant = ini_sys:r_bool_ex(sec, "is_night_mutant") or false
+        local is_boss_mutant = ini_sys:r_bool_ex(sec, "is_boss_mutant") or false
+        local is_predator_mutant = ini_sys:r_bool_ex(sec, "is_predator_mutant") or false
+
+        -- Check if the mutant is enabled in MCM
+        if string.find(sec, "respawn_") then
+            mutant_enabled = rebound_encounters_mcm.get_config(sec)
+            if mutant_enabled == nil then
+                mutant_enabled = false -- default to false if not found in mcm (not installed)
+            end
+        end
+        
+        if is_day() then
+            if respawn_mutant and mutant_enabled and not is_night_mutant and not (is_boss_mutant and enable_boss_is_night_only) then
+                local existing_section = nil
+                for _, squad in ipairs(squads_to_spawn) do
+                    if squad.sec == sec then
+                        existing_section = squad
+                        break
+                    end
+                end
+                
+                if not existing_section then
+                    -- Check if the section is in the list of squads available at this rank
+                    local squad_permitted_this_rank = false
+                    for _, squad in ipairs(squads_available_this_rank) do
+                        if squad == sec then
+                            squad_permitted_this_rank = true
+                            break
+                        end
+                    end
+                    if squad_permitted_this_rank then
+                        table.insert(squads_to_spawn, {
+                            sec = sec, 
+                            is_night_mutant = is_night_mutant or false, 
+                            is_boss_mutant = is_boss_mutant or false,
+                            is_predator_mutant = is_predator_mutant or false  -- Include is_predator_mutant
+                        })
+                    end
+                end
+            end
+        else
+            if respawn_mutant and mutant_enabled and (is_night_mutant or (is_boss_mutant and enable_boss_is_night_only)) then
+                local existing_section = nil
+                for _, squad in ipairs(squads_to_spawn) do
+                    if squad.sec == sec then
+                        existing_section = squad
+                        break
+                    end
+                end
+                
+                if not existing_section then
+                    -- Check if the section is in the list of squads available at this rank
+                    local squad_permitted_this_rank = false
+                    for _, squad in ipairs(squads_available_this_rank) do
+                        if squad == sec then
+                            squad_permitted_this_rank = true
+                            break
+                        end
+                    end
+                    if squad_permitted_this_rank then
+                        table.insert(squads_to_spawn, {
+                            sec = sec, 
+                            is_night_mutant = is_night_mutant or false, 
+                            is_boss_mutant = is_boss_mutant or false,
+                            is_predator_mutant = is_predator_mutant or false  -- Include is_predator_mutant
+                        })
+                    end
+                end
+            end
+        end
+    end)
+end
+
+function table_is_empty(t)
+    return next(t) == nil
+end
+
+-- Check if an object is outside the spawn radius
+function se_obj_outside_spawn_radius(se_obj, radius)
+    if not se_obj then
+        return false
+    end
+
+    -- Check if the object is on the same level as the player
+    local actor = alife():actor()
+    if not actor then
+        return false
+    end
+
+    local on_same_level = simulation_objects.is_on_the_same_level(actor, se_obj)
+    if not on_same_level then
+        return true
+    end
+
+    -- Calculate the distance between the player's position and the object's position
+    local ac_pos = db.actor:position()
+    local se_obj_pos = se_obj.position
+    local outside_radius = ac_pos:distance_to_xz(se_obj_pos) > radius
+
+    return outside_radius
+end
+
+-- Check if it's currently day time
+function is_day()
+    local cur_hour = level.get_time_hours() + level.get_time_minutes() / 60
+    if day_start < day_end then
+        return (cur_hour >= day_start) and (cur_hour < day_end)
+    else
+        return (cur_hour >= day_start) or (cur_hour < day_end)
+    end
+end
+
+-- Get the level name of a smart terrain object
+function get_se_obj_level_name(se_obj)
+    local vertex = game_graph():vertex(se_obj.m_game_vertex_id)
+    if not vertex then
+        return "<unknown>"
+    end
+
+    local target_level_id = vertex:level_id()
+    local target_level_name = alife():level_name(target_level_id)
+    return target_level_name
+end
+
+-- Print debug messages if debugging is enabled
+function pr(...)
+    if not enable_debug then return end
+    printf(...)
+end
+
+-- Save the state of the script
+function save_state(m_data)
+    m_data.active_spawns = active_spawns
+    m_data.smart_terrain_exemptions = smart_terrain_exemptions
+    m_data.squads_available_this_rank = squads_available_this_rank
+    m_data.squads_to_spawn = squads_to_spawn
+    m_data.available_smart_terrains = available_smart_terrains
+    m_data.respawn_delay = respawn_delay
+    m_data.active_boss_mutant = active_boss_mutant
+    m_data.active_passive_squad = active_passive_squad
+    m_data.marked_times = marked_times
+    m_data.cooldowns = cooldowns
+    m_data.installed_respawn_mutants = installed_respawn_mutants
+    m_data.last_sheltered_status = last_sheltered_status
+    m_data.spawn_accumulator = spawn_accumulator
+end
+
+-- Load the state of the script
+function load_state(m_data)
+    active_spawns = m_data.active_spawns or {}
+    smart_terrain_exemptions = m_data.smart_terrain_exemptions or {}
+    squads_available_this_rank = m_data.squads_available_this_rank or {}
+    squads_to_spawn = m_data.squads_to_spawn or {}
+    available_smart_terrains = m_data.available_smart_terrains or {}
+    respawn_delay = m_data.respawn_delay or 0
+    active_boss_mutant = m_data.active_boss_mutant or 0
+    active_passive_squad = m_data.active_passive_squad or {}
+    marked_times = m_data.marked_times or {}
+    cooldowns = m_data.cooldowns or {}
+    installed_respawn_mutants = m_data.installed_respawn_mutants or {}
+    last_sheltered_status = m_data.last_sheltered_status or false
+    spawn_accumulator = m_data.spawn_accumulator or 0
+end
+
+-- Runs when changing level
+function on_before_level_changing()
+    if wipe_mutants_on_level_change then
+        delete_mutants()
+        pr("Level is changing, wiping ReSpawn Mutants")
+    end
+end
+
+-- Check to see if an emission or psy storm is active
+function surge_started()
+    return surge_manager.is_loaded() and surge_manager.is_started() or psi_storm_manager.is_loaded() and psi_storm_manager.is_started()
+end
+
+function special_event_started()
+    local blood_moon_active = false
+    local crawling_mist_active = false
+
+    if blood_moon_manager then
+        blood_moon_active = blood_moon_manager.is_loaded and blood_moon_manager.is_started()
+    end
+
+    if crawling_mist_manager then
+        crawling_mist_active = crawling_mist_manager.is_loaded and crawling_mist_manager.is_started()
+    end
+
+    if blood_moon_active or crawling_mist_active then
+        special_spawns = {
+            "hayzed_weak",
+            "hayzed_normal",
+            "hayzed_strong",
+            "lady_weak",
+            "lady_normal",
+            "lady_strong",
+            "skyrim_male",
+            "skyrim_female",
+            "mizgir_weak",
+            "mizgir_normal",
+            "mizgir_strong",
+            "vebber_weak",
+            "vebber_normal",
+            "vebber_strong"
+        }
+        return true
+    else
+        special_spawns = {}
+        return false
+    end
+end
+
+function check_actor_in_safe_zone()
+    local id = smart_terrain.nearest_to_actor_smart.id
+    local smart = id and alife_object(id)
+    local dist = smart_terrain.nearest_to_actor_smart.dist
+
+    local is_exempt = false
+    if smart then  -- Ensure smart is not nil
+        for _, exempt_name in ipairs(smart_terrain_exemptions) do
+            if smart:name() == exempt_name then
+                is_exempt = true
+                break
+            end
+        end
+
+        if is_exempt and dist <= 40 then
+            pr("id: [%s] name: [%s] dist: [%s] || safe: [true]", id, smart:name(), round_idp(dist, 2))
+            return true
+        end
+    end
+
+    return false  -- Actor is not in a safe zone
+end
+
+-- requires demonized_geometry_ray.script to work
+function is_actor_safe()
+    local surge_state = GetEvent("surge", "state")
+	local psi_storm_state = GetEvent("psi_storm", "state")
+
+    if (surge_state) or (psi_storm_state) then
+        actor_is_indoors = true
+        return
+    end
+
+    local pos = db.actor:position()
+    if IsMoveState("mcCrouch") and IsMoveState("mcAccel") then -- Prone
+        pos.y = pos.y + 0.25
+    elseif IsMoveState("mcCrouch") then
+        pos.y = pos.y + 0.5
+    else
+        pos.y = pos.y + 0.75
+    end
+
+    local total_points = 0
+    local ray_count = size_table(ray_table)
+    local ray_range = 8   -- Range of each ray
+    local cover_prcnt_needed = 0.85
+    local cover_prcnt_threshold = 0.70
+
+    for i = 1, ray_count do
+        local ray_args = {
+            ray_range = ray_range,
+            contact_range = ray_range - 0.01,
+            flags = (1 + 2 + 4 + 8),
+            ignore_object = db.actor
+        }
+
+        local ray_dir = ray_table[i]
+        local ray = demonized_geometry_ray.geometry_ray(ray_args)
+        local result = ray:get(pos, ray_dir)
+
+        while result.in_contact and result.result.material_name do
+            local name = result.result.material_name
+            if not (string.find(name, "bush") or string.find(name, "water")) then
+                break -- break out of the loop if contact is not a bush
+            end
+            ray_args.ray_range = ray_args.ray_range - result.distance
+            ray_args.contact_range = ray_args.contact_range - result.distance
+            ray = demonized_geometry_ray.geometry_ray(ray_args)
+            local new_pos = vector():set(result.position):add(vector():set(ray_dir):mul(0.01))
+            result = ray:get(new_pos, ray_dir)
+        end
+
+        if result.in_contact then
+            total_points = total_points + 1
+        end
+    end
+
+    local cover_percentage = (total_points / ray_count) * 100
+    local current_cover_prcnt = total_points / ray_count
+    local actor_is_safe = true
+    if current_cover_prcnt >= cover_prcnt_needed then
+        actor_is_safe = true
+    else
+        actor_is_safe = true
+        if current_cover_prcnt <= cover_prcnt_threshold then
+            actor_is_safe = false
+        end
+    end
+    actor_is_indoors = actor_is_safe
+    pr("Cover percentage: %s : Indoor: %s", cover_percentage, actor_is_indoors)
+    if actor_is_indoors == true then
+        set_safe_zone_status(true)
+    else
+        set_safe_zone_status(false)
+    end
+    retarget_blood_moon_squads()
+end
+
+
+function notify_boss_mutant_status()
+    pr("--Checking Boss Mutant Status--")
+    for _, spawn in ipairs(active_spawns) do
+        if spawn.is_boss_mutant then
+            local squad = alife_object(spawn.mutant_id)
+            if squad then
+                local phrase_keys = get_phrase_keys("rebound_encounters_boss_spawn_still_active")
+                local translated_text = ""
+                if #phrase_keys > 0 then
+                    local random_key = phrase_keys[math.random(#phrase_keys)]
+                    translated_text = game.translate_string(random_key)
+                end
+
+                local active_message = translated_text
+                
+                local boss_name = squad:name()
+                boss_name = boss_name:match("respawn_(%a+)")
+                boss_name = "respawn_mutant_" .. boss_name
+                boss_name = game.translate_string(boss_name)
+                
+                local location_description = dynamic_news_helper.GetPointDescription(squad)
+                
+                local message = string.format(active_message, boss_name, location_description)
+                if db.actor then
+                    news_manager.send_tip(db.actor, message, nil, nil, 30000)
+                else
+                    pr("Warning: Unable to send message, db.actor is nil")
+                end
+            end
+        end
+    end
+end
+
+function clear_vanilla_mutant_targets(player_safe)
+    if player_safe then
+        for id, _ in pairs(SIMBOARD.squads) do
+            local squad = alife_object(id)
+            if squad and squad.commander_id and squad.online and string.find(squad:section_name(), "rebound_vanilla") then
+                squad.scripted_target = nil
+                squad.rush_to_target = false
+            end
+        end
+    end
+end
+
+function toggle_predator_targeting()
+    local current_level_name = level.name()
+    local current_level_smarts = available_smart_terrains[current_level_name]
+
+    if actor_in_safe_zone or actor_is_indoors or actor_is_near_lighted_campfire then
+        player_safe = true
+    else
+        player_safe = false
+    end
+
+    for _, spawn in ipairs(active_spawns) do
+        if spawn.is_predator_mutant then
+            local se = alife_object(spawn.mutant_id)
+            if se and (se:section_name() == spawn.sec) then
+                if not player_safe or player_safe == false then
+                    se.scripted_target = "actor"
+                    se.rush_to_target = true
+                    pr("Spawn ID [%s] Target Status: %s, Rushing: %s", spawn.mutant_id, se.scripted_target, se.rush_to_target)
+                else
+                    if current_level_smarts and #current_level_smarts > 0 then
+                        local random_smart_id = current_level_smarts[math.random(1, #current_level_smarts)]
+                        local random_smart = alife_object(random_smart_id)
+                        if random_smart and random_smart:clsid() == clsid.smart_terrain then
+                            local smart_name = random_smart:name()
+                            if se.scripted_target == "actor" then
+                                se.scripted_target = smart_name
+                            end
+                            se.rush_to_target = true
+                            pr("Spawn ID [%s] Target Status: %s, Rushing: %s in level [%s", spawn.mutant_id, se.scripted_target, se.rush_to_target, current_level_name)
+                        else
+                            pr("Warning: Invalid smart terrain ID or object for predator [%s]", se:section_name())
+                        end
+                    else
+                        pr("Warning: No suitable smart terrains found in level [%s] for predator [%s]", current_level_name, se:section_name())
+                    end
+                end
+            end
+        end
+    end
+    pr("! Adjusted predator activity. Safe Zone: %s || Indoors: %s || Near Campfire: %s \n-- Player is currently safe: %s", actor_in_safe_zone, actor_is_indoors, actor_is_near_lighted_campfire, player_safe)
+end
+
+function actor_sleeping(hud_name)
+    if hud_name == "UISleep" then
+        pr("Stopping mutant attacks due to actor initiating sleep")
+        
+        for _, spawn in pairs(active_spawns) do
+            local se = alife_object(spawn.mutant_id)
+            if se and (se:section_name() == spawn.sec) then
+                -- Disable targeting for all mutants
+                se.scripted_target = nil
+                se.rush_to_target = false
+            end
+        end
+        game_timer("mark", 5)
+        spawn_accumulator = 0
+    end
+end
+
+function assign_random_smart_target()
+    local current_level_name = level.name()
+    local current_level_smarts = available_smart_terrains[current_level_name]
+
+    for _, spawn in pairs(active_spawns) do
+        local se = alife_object(spawn.mutant_id)
+        if se and not spawn.is_predator_mutant then
+            if current_level_smarts and #current_level_smarts > 0 then
+                local random_smart_id = current_level_smarts[math.random(1, #current_level_smarts)]
+                local random_smart = alife_object(random_smart_id)
+                if random_smart and random_smart:clsid() == clsid.smart_terrain then
+                    local smart_name = random_smart:name()
+                    se.scripted_target = smart_name
+                    se.rush_to_target = true
+                    pr("Non-predator mutant [%s] assigned to smart terrain [%s] in level [%s]", se:section_name(), smart_name, current_level_name)
+                else
+                    pr("Warning: Invalid smart terrain ID or object for mutant [%s]", se:section_name())
+                end
+            else
+                pr("Warning: No suitable smart terrains found in level [%s] for mutant [%s]", current_level_name, se:section_name())
+            end
+        end
+    end
+end
+
+function send_random_rumor()
+    local phrase_keys = get_phrase_keys("rebound_encounters_level_rumors")
+    if not table_is_empty(squads_to_spawn) and (#phrase_keys > 0) then
+        local random_key = phrase_keys[math.random(#phrase_keys)]
+        local random_rumor = game.translate_string(random_key)
+        local random_squad = squads_to_spawn[math.random(1, #squads_to_spawn)].sec
+        local random_squad = string.gsub(random_squad, "respawn_", "respawn_mutant_")
+        local translated_squad = game.translate_string(random_squad)
+        local message = string.format(random_rumor, translated_squad)
+
+        if db.actor then
+            local witness = FindRandomStalker()
+            if  witness then
+                send_tip(message, witness, 10)
+            end
+        else
+            pr("Warning: Unable to send message, db.actor is nil")
+        end
+    end
+end
+
+function count_available_smart_terrains()
+    local total_count = 0
+    for _, smart_list in pairs(available_smart_terrains) do
+        total_count = total_count + #smart_list
+    end
+    return total_count
+end
+
+function reset_spawn_delay()
+    if is_day() then
+        respawn_delay = (math.random(spawn_time_delay_min, spawn_time_delay_max) * in_game_hour_multiplier)
+    else
+        respawn_delay = (math.random(spawn_time_delay_min, spawn_time_delay_max) * (in_game_hour_multiplier/2))
+    end
+end
+-- 
+function actor_on_first_update()
+    init_ray_table()
+    fetch_values()
+    if respawn_delay == nil then
+        reset_spawn_delay()
+    end
+
+    save_respawn_smarts()
+    shuffle_smart_ids()
+    collect_squads_to_spawn()
+    
+    local numActiveSpawns = #active_spawns
+    if numActiveSpawns == 0 or game_timer("check", 1) >= respawn_delay then
+        try_to_spawn()
+    else
+        pr("RE:Bound - Existing active spawns detected (%s). Skipping initial spawn attempt.", tostring(numActiveSpawns))
+    end
+
+    spawn_passive_squads_near_actor()
+    if count_non_respawn_squads() == 0 then
+        spawn_mutant_squad_on_eligible_smart()
+    else
+        pr("RE:Bound - Existing non-respawn spawns detected. Skipping spawn attempt.")
+    end
+end
+
+
+local function extractPrefix(str)
+    if str then
+      return str:match("^(%a+)") or str
+    else
+      return "Unknown"
+    end
+end
+
+function capitalizeFirstLetter(str)
+    if str and #str > 0 then
+      return string.upper(string.sub(str, 1, 1)) .. string.sub(str, 2)
+    else
+      return str
+    end
+end
+
+function monster_on_death_callback(npc, who)
+    local id = npc:id()
+    local killer = who:name()
+    local victim_section = npc:section()
+    local full_victim_section = "respawn_" .. victim_section
+    local victim_name = extractPrefix(victim_section)
+
+    if check_ltx_contains_value(plugin_file_name, "boss_mutants", full_victim_section) and killer == "actor" then
+        pr("!Boss mutant was killed")
+        local boss_mutant_weight = tonumber(read_ltx_section(plugin_file_name,"boss_mutant_weight", victim_name)) or 0
+        local reward_money = math.random((1000 * boss_mutant_weight), (5000 * boss_mutant_weight))
+
+        local combined_message = "You received " .. reward_money .. " for killing the boss mutant."
+
+        local witness = FindFriendlyWitness(npc, who, false, false, false, false)
+        if witness then
+            local witness_community = character_community(witness)
+            local goodwill_reward = math.max(0, (boss_mutant_weight * 5))
+            if goodwill_reward > 0 then
+                game_relations.change_factions_community_num(witness_community, db.actor:id(), goodwill_reward)
+                local witness_faction_name = read_ltx_section(plugin_file_name,"faction_names", witness_community) or ""
+                combined_message = combined_message .. string.format("\nYou also gained %d goodwill with the %s faction.", goodwill_reward, capitalizeFirstLetter(witness_faction_name))
+            end
+        end
+
+        news_manager.send_tip(db.actor, combined_message, nil, nil, 3000)
+        db.actor:give_money(reward_money)
+    end
+
+    if enable_goodwill_penalty then
+        if killer == "actor" then
+            local witness = FindWitness(npc, who, false, false, false, false)
+            if witness then
+                local witness_community = character_community(witness)
+                local witness_faction_name = read_ltx_section(plugin_file_name,"faction_names", witness_community) or ""
+                local fauna_weight = tonumber(read_ltx_section(plugin_file_name,"passive_fauna_weight", victim_name)) or 0
+                local faction_weight = tonumber(read_ltx_section(plugin_file_name,"faction_weight", witness_community)) or 0
+                local goodwill_value = fauna_weight * faction_weight
+                if goodwill_value > 0 then
+                    local goodwill_reduction = goodwill_value * -1
+                    game_relations.change_factions_community_num(witness_community, db.actor:id(), goodwill_reduction)
+                    actor_menu.set_msg(1, "Victim: " .. victim_name .. " Weight: " .. fauna_weight .. " Witness: " .. witness_community .. " Weight: " .. faction_weight .. " Good will Penalty: " .. goodwill_value, 2)
+                    local goodwill_penalty_message = string.format("You have lost %d goodwill with the %s faction for killing a %s.", goodwill_value, capitalizeFirstLetter(witness_faction_name), capitalizeFirstLetter(victim_name))
+                    news_manager.send_tip(db.actor, goodwill_penalty_message, nil, nil, 3000)
+                end
+            end
+        end
+    end
+    remove_attacked_npc_id(npc)
+end
+
+
+function monster_on_loot_init(victim, loot_table)
+    if math.random() <= 0.30 then
+        if victim then
+            local boss_names = get_list_from_ltx(plugin_file_name, "boss_mutants")
+            local boss_rewards = get_list_from_ltx(plugin_file_name, "boss_rewards")
+            for _, boss_name in ipairs(boss_names) do
+                boss_name = string.gsub(boss_name, "respawn_", "")
+
+                if string.find(boss_name, victim:section()) then
+                    local random_reward_index = math.random(1, #boss_rewards)
+                    local reward_item = boss_rewards[random_reward_index]
+                    
+                    if reward_item then
+                        loot_table[reward_item] = { count = 1 }
+                        pr("Added reward '%s' to boss loot table.", reward_item)
+                    else
+                        pr("Warning: Invalid reward item '%s' in boss_rewards section.", reward_item)
+                    end
+                end
+            end
+        end
+    end
+end
+
+function retarget_passive_fauna()
+
+    for id, _ in pairs(SIMBOARD.squads) do
+        local squad = alife_object(id)
+        if squad and squad.commander_id and squad.online then
+            local squad_section_name = squad:section_name()
+            if table_contains(passives_available, squad_section_name) then  
+                local random_smart = get_random_smart_terrain_object()
+                local random_smart_name = random_smart and random_smart:name()
+                if random_smart_name then
+                    squad.scripted_target = random_smart_name
+                    squad.rush_to_target = true
+                    pr("Setting Passive Fauna Squad [%s] Target Status: %s, Rushing: %s", squad:name(), squad.scripted_target, squad.rush_to_target)
+                else
+                    pr("Warning: No suitable smart terrains found for passive fauna squad [%s]", squad:name())
+                end
+            end
+        end
+    end
+end
+
+function actor_on_update()
+
+    if game_timer("check", 1) >= respawn_delay then
+        save_respawn_smarts()
+        shuffle_smart_ids()
+        collect_squads_to_spawn()
+        try_to_spawn()
+        reset_spawn_delay()
+
+        game_timer("mark", 1)
+    end
+
+    if game_timer("check", 2) >= 10 then
+        pr("-- Re:Bound - Despawning distant passive fauna")
+        release_distant_passive_fauna(300)
+        game_timer("mark", 2)
+    end
+
+    if game_timer("check", 3) >= passive_spawn_delay then
+        pr("-- Re:Bound - Spawning Passive Fauna")
+        spawn_passive_squads_near_actor()
+        passive_spawn_delay = math.floor(math.random(15, 60))
+        game_timer("mark", 3)
+    end
+    
+    if game_timer("check", 4) >= 30 then
+        notify_boss_mutant_status()    
+        pr("-- Re:Bound - Retargeting Vanilla Mutants")
+        retarget_vanilla_mutants()
+        pr("-- Re:Bound - Retargeting Non-Predator Mutants")
+        assign_random_smart_target()
+        pr("-- Re:Bound - Retargeting Passive Fauna")
+        retarget_passive_fauna()
+        game_timer("mark", 4)
+    end
+
+    if not cooldown_timer("check", "downtime_check") then
+        if enable_random_vanilla_mutants == true and (not is_current_map_exempt()) then
+            if player_safe == false then
+                local downtime_minutes = game_timer("check", 5) or 0
+                spawn_accumulator = spawn_accumulator or 0
+                local increment = math.random() * (downtime_minutes / (accumulator_threshold * 10))
+                spawn_accumulator = spawn_accumulator + increment
+                if spawn_accumulator >= 1 then
+                    spawn_random_mutants_outside_safe_zone()
+                end
+
+                pr(string.format("-- RE:Bound: Minutes: %d, Accumulator: %.4f", downtime_minutes, spawn_accumulator))
+
+            elseif player_safe == true then
+                game_timer("mark", 5)
+                spawn_accumulator = 0
+            end
+        end
+        cooldown_timer("mark", "downtime_check", 1)
+    end
+
+    if not cooldown_timer("check", "check_safety") then
+        check_player_safety()
+        cooldown_timer("mark", "check_safety", 1)
+    end
+
+    if not cooldown_timer("check", "rumor") then
+        if math.random(1, 100) < 25 then
+            send_random_rumor()
+        end
+        cooldown_timer("mark", "rumor", math.random(60, 180))
+    end
+
+    --show_move_state()
+end
+
+function game_timer(state, id)
+    if state == "mark" then
+        if not id then return end
+        local found = false
+        for _, entry in ipairs(marked_times) do
+            if entry.id == id then
+                entry.time = game.get_game_time()
+                found = true
+                break
+            end
+        end
+
+        if not found then
+            table.insert(marked_times, {id = id, time = game.get_game_time()})
+        end
+
+    elseif state == "check" then
+        if not id then return end
+        for _, entry in ipairs(marked_times) do
+            if entry.id == id then
+                local time_diff_seconds = game.get_game_time():diffSec(entry.time)
+                local time_diff_minutes = math.floor(time_diff_seconds / 60)
+                return time_diff_minutes
+            end
+        end
+        game_timer("mark", id)
+        return 0
+
+    elseif state == "clear" then
+        marked_times = {}
+    end
+end
+
+function release_distant_passive_fauna(distance)
+    for i = #active_passive_squad, 1, -1 do
+        local squad_data = active_passive_squad[i]
+        local squad = alife_object(squad_data.squad_id)
+        if squad then
+            local commander_id = squad:commander_id()
+            local commander = alife_object(commander_id)
+            local distance_to_player = commander and commander.position and db.actor:position():distance_to(commander.position) or math.huge
+
+            if commander and distance_to_player > distance then
+                alife_release(squad)
+                table.remove(active_passive_squad, i)
+                pr("RE:Bound: Released distant passive fauna squad (distance check): %s", squad_data.squad_id)
+            elseif not commander then
+                pr("Warning: Commander not found for squad %d. Removing squad data.", squad_data.squad_id)
+                table.remove(active_passive_squad, i)
+            end
+        else
+            pr("Warning: Squad with ID %d not found in active passive squads.", squad_data.squad_id)
+            table.remove(active_passive_squad, i)
+        end
+    end
+end
+
+function init_ray_table()
+    ray_table = {}
+    local counter = 1
+    for i = 1, ray_count_circle do
+        for ii = 0, ray_count_vertical - 1 do
+            if not (ii == ray_count_vertical - 1 and i % 3 ~= 0) and not (ii == ray_count_vertical - 2 and i % 2 == 0) then
+                local ray_dir = vector():set(0, 0, 1)
+                local angle = (ii / (ray_count_vertical - 1)) * 82
+
+                ray_dir.y = math.sin(angle * 0.017453292519943295769236907684886)
+                ray_dir.z = math.cos(angle * 0.017453292519943295769236907684886)
+
+                local rot_angle = (i / ray_count_circle) * 360
+                ray_dir = vector_rotate_y(ray_dir, rot_angle):normalize()
+
+                ray_table[counter] = vector():set(ray_dir)
+                counter = counter + 1
+            end
+        end
+    end
+end
+
+function table_contains(tbl, value)
+    for _, v in ipairs(tbl) do
+        if v == value then
+        return true
+        end
+    end
+    return false
+end    
+
+function is_npc_attacked(npc, timeThreshold)
+    local npc_id = npc and npc:id()
+    if not npc_id then
+        pr("Warning: Invalid NPC object provided to is_npc_attacked()")
+        return false, nil
+    end
+
+    timeThreshold = timeThreshold or 0
+
+    for _, entry in ipairs(mutant_id_attacked) do
+        if entry.npc_id == npc_id then
+            local timeSinceAttack = game.get_game_time():diffSec(entry.game_time)
+            return true, timeSinceAttack
+        end
+    end
+    return false, nil
+end  
+
+function add_attacked_npc_id(npc)
+    if npc and npc:id() then
+        local npc_id = npc:id()
+        local game_time = game.get_game_time()
+
+        local found = false
+        for i, entry in ipairs(mutant_id_attacked) do
+            if entry.npc_id == npc_id then
+                entry.game_time = game_time
+                found = true
+                break
+            end
+        end
+
+        if not found then
+            table.insert(mutant_id_attacked, { npc_id = npc_id, game_time = game_time })
+        end
+    else
+        pr("Warning: Invalid NPC object provided to add_attacked_npc_id()")
+    end
+end
+
+function remove_attacked_npc_id(npc)
+    if not npc or not npc:id() then
+        pr("Warning: Invalid NPC object provided to remove_attacked_npc_id()")
+        return
+    end
+
+    local npc_id = npc:id()
+    local index = -1
+
+    for i, entry in ipairs(mutant_id_attacked) do
+        if entry.npc_id == npc_id then
+            index = i
+            break
+        end
+    end
+
+    if index ~= -1 then
+        table.remove(mutant_id_attacked, index)
+        pr("Removed NPC ID [%s] from mutant_id_attacked table.", npc_id)
+    else
+        pr("NPC ID [%s] not found in mutant_id_attacked table.", npc_id)
+    end
+end
+
+
+function npc_on_hit_callback(npc, amount, local_direction, who, bone_index)
+    if IsStalker(who) and who:name() == "actor" and enable_accumulator_reset_on_npc_attack == true then
+        game_timer("mark", 5)
+        spawn_accumulator = 0
+    end
+end
+
+function monster_on_hit_callback(npc, amount, local_direction, who, bone_index)
+    if IsStalker(who) then
+        add_attacked_npc_id(npc)
+    end
+
+    if IsStalker(who) and who:name() == "actor" then
+        game_timer("mark", 5)
+        spawn_accumulator = 0
+    end
+    
+    if not cooldown_timer("check", "encounter") then
+        if not npc or not who then return end
+        local squad_sec_to_compare = ""
+        
+        local npc_section = npc:section()
+        if not npc_section then return end
+
+        local npc_name = npc_section:match("^[^_]+") or "Unknown NPC"
+        local attacker_name = IsStalker(who) and (who:character_name() or "an unknown stalker") or "an unknown stalker"
+
+        if attacker_name == previous_attacker_name then
+            return
+        else
+            previous_attacker_name = attacker_name
+        end
+
+        local is_mutant_in_spawn_pool = false
+        for _, squad in ipairs(squads_to_spawn) do
+            squad_sec_to_compare = squad_sec_to_compare .. squad.sec .. " - "
+            if squad.sec and string.find(squad.sec, npc_name) then
+                is_mutant_in_spawn_pool = true
+                break
+            end
+        end
+
+        if npc_name ~= "Unknown NPC" then
+            npc_name = game.translate_string("respawn_mutant_" .. npc_name)
+        end
+
+        if is_mutant_in_spawn_pool and attacker_name ~= db.actor:character_name() then
+            local location_description = dynamic_news_helper.GetPointDescription(who) or "in an unknown location"
+            location_description = location_description:gsub("^in ", "")
+            
+            local phrase_keys = get_phrase_keys("rebound_encounters_encounter_news")
+
+            if #phrase_keys > 0 then
+                local random_key = phrase_keys[math.random(#phrase_keys)]
+                local translated_text = game.translate_string(random_key)
+                local random_encounter_news = string.format(translated_text, attacker_name, npc_name, location_description)
+                local witness = FindWitness(npc, who, false, false, false, true)
+                if witness then
+                    send_tip(random_encounter_news, witness, 10)
+                end
+            end
+        end
+        cooldown_timer("mark", "encounter", 5)
+    end
+
+    --print_npc_clsid(npc)
+
+end
+
+function print_npc_clsid(monster)
+  if (monster and monster.clsid) then
+    local clsid_value = monster:clsid()
+    printf("Monster: %s, CLSID: %s", monster:name(), tostring(clsid_value))
+  else
+    printf("Error: Invalid monster object passed to print_npc_clsid")
+  end
+end
+
+function read_ltx_section(filename,section,field)
+	local ini = ini_file(filename)
+	local value = ini and ini:r_string_ex(section,field) or "nil"
+    return value
+end
+
+function retarget_blood_moon_squads()
+    if blood_moon_manager then -- check if blood moon mod is installed
+        for id, _ in pairs(SIMBOARD.squads) do
+            local squad = alife_object(id)
+            if squad and squad.commander_id then
+                set_blood_moon_squad_target(squad)
+            end
+        end   
+    end
+end
+
+function set_blood_moon_squad_target(squad)
+    if not (string.find(squad:section_name(), "blood_moon")) then return end
+    if is_safe_zone == true then
+        local nearest_smart_id = get_nearest_smart_from_mutant_commander(squad)
+        local nearest_smart = alife_object(nearest_smart_id)
+        local nearest_smart_name = nearest_smart and nearest_smart:name()
+        squad.scripted_target = nearest_smart_name
+        squad.rush_to_target = true
+    elseif is_safe_zone == false then
+        squad.scripted_target = "actor"
+        squad.rush_to_target = true
+    end
+end
+
+function retarget_vanilla_mutants()
+        for id, _ in pairs(SIMBOARD.squads) do
+            local squad = alife_object(id)
+            if squad and squad.commander_id and squad.online then
+                set_vanilla_mutant_squad_target(squad)
+            end
+        end
+end
+
+function count_non_respawn_squads()
+    local squad_count = 0
+    for id, _ in pairs(SIMBOARD.squads) do
+        local squad = alife_object(id)
+        if squad and string.find(squad.player_id, "monster") and (string.find(squad:section_name(), "rebound_vanilla_")) then
+            squad_count = squad_count + 1
+        end
+    end
+    pr("-- RE:Bound - Non-Respawn Squads: %s", squad_count)
+    return squad_count
+end
+
+
+function game_timer(state, id)
+    if id == nil and state ~= "initialize" then
+        return false, "Error: ID is required for this state."
+    end
+
+    if state == "mark" then
+        local found = false
+        for _, entry in ipairs(marked_times) do
+            if entry.id == id then
+                entry.time = game.get_game_time()
+                found = true
+                break
+            end
+        end
+
+        if not found then
+            table.insert(marked_times, {id = id, time = game.get_game_time()})
+        end
+
+        return true
+
+    elseif state == "check" then
+        for _, entry in ipairs(marked_times) do
+            if entry.id == id then
+                local time_diff_seconds = game.get_game_time():diffSec(entry.time)
+                local time_diff_minutes = math.floor(time_diff_seconds / 60)
+                return time_diff_minutes
+            end
+        end
+
+        game_timer("mark", id)
+        return 0
+
+    elseif state == "clear" then
+        marked_times = {}
+        return true
+
+    else
+        return false, "Invalid state. Use 'mark', 'check', 'initialize', or 'clear'."
+    end
+end
+
+function cooldown_timer(state, id, duration_minutes)
+    if id == nil and state ~= "initialize" then
+        return false, "Error: ID is required for this state."
+    end
+
+    if state == "mark" then
+        local found = false
+        for i, entry in ipairs(cooldowns) do
+            if entry.id == id then
+                entry.time = game.get_game_time()
+                entry.duration_minutes = duration_minutes
+                found = true
+                break
+            end
+        end
+
+        if not found then
+            table.insert(cooldowns, {id = id, time = game.get_game_time(), duration_minutes = duration_minutes})
+        end
+        return true
+
+    elseif state == "check" then
+        for _, entry in ipairs(cooldowns) do
+            if entry.id == id then
+                local time_diff_seconds = game.get_game_time():diffSec(entry.time)
+                local time_diff_minutes = math.floor(time_diff_seconds / 60)
+                return time_diff_minutes < entry.duration_minutes
+            end
+        end
+
+        return false
+
+    elseif state == "clear" then
+        cooldowns = {}
+        return true
+
+    elseif state == "initialize" then
+        cooldowns = {}
+        return true
+
+    else
+        return false, "Invalid state. Use 'mark', 'check', 'initialize', or 'clear'."
+    end
+end
+
+function set_vanilla_mutant_squad_target(squad)
+    if not string.find(squad.player_id, "monster") then return end -- skip if not a monster squad
+    if (string.find(squad:section_name(), "blood_moon")) or (string.find(squad:section_name(), "respawn_")) then return end -- skip if from respawn or blood moon mods
+    local random_smart = get_random_smart_terrain_object()
+    local random_smart_name = random_smart and random_smart:name()
+    squad.scripted_target = random_smart_name
+    squad.rush_to_target = true
+    pr("Setting Vanilla Mutant Squad [%s] Target Status: %s, Rushing: %s", squad:name(), squad.scripted_target, squad.rush_to_target)
+end
+
+function get_random_smart_terrain_object()
+    local current_level_name = level.name()
+    local current_level_smarts = available_smart_terrains[current_level_name]
+  
+    if current_level_smarts and #current_level_smarts > 0 then
+        local random_smart_id = current_level_smarts[math.random(1, #current_level_smarts)]
+        local random_smart = alife_object(random_smart_id)
+        return random_smart
+    else
+        return nil
+    end
+end
+
+function anomaly_on_before_activate(zone, obj, flags)
+    flags.ret_value = true
+
+    if not obj or not zone then
+        return
+    end
+    if IsMonster(obj) then
+        if not obj:alive() then
+            return flags.ret_value
+        end
+        for idx, spawn in ipairs(active_spawns) do
+            if obj.id == spawn.mutant_id then                
+                if spawn.is_boss_mutant then
+                    pr("Boss Mutant is immune to anomalies")
+                    flags.ret_value = false
+                    return flags.ret_value
+                end
+            end
+        end
+        return flags.ret_value
+    end
+    if obj:clsid() == clsid.obj_bolt then
+        flags.ret_value = true
+    end
+    
+    return flags.ret_value
+end
+
+-- Debug functions
+function get_spawnable_squads_report()
+    pr("-- RE:Bound Spawnable Squads Report --")
+    pr("Current Level: " .. level.name() .. " It is currently day: " .. tostring(is_day()))
+    pr("Squads that can be spawned on the current map:")
+    local boss_mutant_count = 0
+    for _, squad in ipairs(squads_to_spawn) do
+        local squad_info = {
+            name = squad.sec,
+            is_boss_mutant = squad.is_boss_mutant,
+            is_night_mutant = squad.is_night_mutant,
+            is_predator_mutant = squad.is_predator_mutant
+        }
+        if squad_info.is_boss_mutant then
+            boss_mutant_count = boss_mutant_count + 1
+        end
+        pr("  - " .. squad_info.name .. ": is_boss_mutant=" .. tostring(squad_info.is_boss_mutant) .. ", is_night_mutant=" .. tostring(squad_info.is_night_mutant) .. ", is_predator_mutant=" .. tostring(squad_info.is_predator_mutant))
+    end
+    local player_rank = db.actor:character_rank()
+    pr("Counts:")
+    pr("  - Squads to Spawn: " .. #squads_to_spawn)
+    pr("  - Boss Mutants Available: " .. boss_mutant_count)
+    pr("  - Max Active Spawns: " .. max_active_spawns)
+    pr("  - Active Spawns: " .. #active_spawns)
+    pr("  - Player Rank: " .. get_rank_description(player_rank))
+    local player_rank_value = get_rank_value(player_rank)
+    pr("  - Player Rank Value: " .. tostring(player_rank_value))
+    pr("  - Difficulty Level: " .. difficulty_level)
+    pr("  - Difficulty Value: " .. difficulty_value)
+end
+
+function get_current_game_values()
+    pr("Current Level: " .. level.name() .. "  Day: " .. tostring(is_day()))
+    pr("  - Wipe Mutants on Level change: " .. tostring(wipe_mutants_on_level_change))
+    pr("  - Day Start: " .. day_start)
+    pr("  - Day End: " .. day_end)
+    pr("  - Boss Spawn Probability: " .. boss_spawn_probability)
+    pr("  - Predator Spawn Probability: " .. predator_spawn_probability)
+    pr("  - enable_spawn_reserve: " .. tostring(enable_spawn_reserve))
+    pr("  - enable_ignore_smart_population: " ..tostring(enable_ignore_smart_population))
+    pr("  - enable_all_maps_spawning: " .. tostring(enable_all_maps_spawning))
+    pr("  - enable_boss_is_night_only: " .. tostring(enable_boss_is_night_only))
+    pr("  - Enable Debug: " .. tostring(enable_debug))
+end
+
+function get_active_spawns_report()
+    pr("-- RE:Bound Active Spawns Report -- Current Map Level: " .. level.name())
+    local active_boss_mutant_count = 0
+    local time_since_last_check = game_timer("check", 1)
+
+    for _, spawn in ipairs(active_spawns) do
+        local spawn_info = {
+            mutant_id = spawn.mutant_id,
+            level_name = spawn.level_name,
+            sec = spawn.sec,
+            is_night_mutant = spawn.is_night_mutant,
+            is_boss_mutant = spawn.is_boss_mutant,
+            is_predator_mutant = spawn.is_predator_mutant,
+            smart_id = spawn.smart_id
+        }
+        if spawn_info.is_boss_mutant then
+            active_boss_mutant_count = active_boss_mutant_count + 1
+        end
+        pr("  - Mutant ID: " .. spawn_info.mutant_id .. ", Level: " .. spawn_info.level_name .. ", Sec: " .. spawn_info.sec .. ", Night Mutant = " .. tostring(spawn_info.is_night_mutant) .. ", Boss = " .. tostring(spawn_info.is_boss_mutant) .. ", Predator = " .. tostring(spawn_info.is_predator_mutant) .. ", Smart ID: " .. spawn_info.smart_id)
+    end
+    local time_till_respawn = respawn_delay - time_since_last_check
+    pr("Time till Respawn (minutes): " .. time_till_respawn .. " Respawn delay (minutes): " .. respawn_delay)
+end
+
+function get_rank_description(player_rank)
+    local ranks = {
+        {max_points = 1499, description = "novice"},
+        {max_points = 2499, description = "trainee"},
+        {max_points = 5499, description = "experienced"},
+        {max_points = 9999, description = "professional"},
+        {max_points = 14999, description = "veteran"},
+        {max_points = 19999, description = "expert"},
+        {max_points = 29999, description = "master"},
+        {max_points = math.huge, description = "legend"}
+    }
+
+    for _, rank in ipairs(ranks) do
+        if player_rank <= rank.max_points then
+            return rank.description
+        end
+    end
+
+    return "unknown rank"
+end
+
+function get_rank_value(player_rank)
+    local ranks = {
+        {max_points = 1499, value = 1},   -- "novice"
+        {max_points = 2499, value = 2},   -- "trainee"
+        {max_points = 5499, value = 3},   -- "experienced"
+        {max_points = 9999, value = 4},   -- "professional"
+        {max_points = 14999, value = 5},  -- "veteran"
+        {max_points = 19999, value = 6},  -- "expert"
+        {max_points = 29999, value = 7},  -- "master"
+        {max_points = math.huge, value = 8} -- "legend"
+    }
+
+    for _, rank in ipairs(ranks) do
+        if player_rank <= rank.max_points then
+            return rank.value
+        end
+    end
+
+    return 0
+end
+
+function get_phrase_keys(phrase_root)
+    local phrase_keys = {}
+    local index = 1
+    local phrase_key, translated_phrase
+
+    while true do
+        phrase_key = string.format("%s_%d", phrase_root, index)
+        translated_phrase = game.translate_string(phrase_key)
+        if translated_phrase == phrase_key then
+            break
+        end
+        table.insert(phrase_keys, phrase_key)
+        index = index + 1
+    end
+    return phrase_keys
+end
+
+function shuffle_table(tbl)
+    for i = #tbl, 2, -1 do
+        local j = math.random(1, i)
+        tbl[i], tbl[j] = tbl[j], tbl[i]
+    end
+end
+
+function shuffle_smart_ids()
+    for _, smart_ids in pairs(available_smart_terrains) do
+        shuffle_table(smart_ids)
+    end
+end
+
+function calculate_opposite_position(position1, position2)
+  local direction = vector():sub(position1, position2):normalize()
+  local opposite_direction = direction:invert()
+  local target_position = vector():add(position2, vector():mul(opposite_direction, 30))
+  return target_position
+end
+
+-- Remove current action, queue, & script control
+function rest(obj)
+    if obj:action() then obj:reset_action_queue() end
+    if obj:get_script() and obj:get_script_name() == "run_to_e" then obj:script(false, "run_to_e") end
+end
+
+-- Movement action
+function run_to(obj, pos)
+    rest(obj)
+    -- Only try to claim if not already under script control
+    local state = "run_to_e"
+    if not obj:get_script() and obj:get_script_name() ~= state then
+        obj:script(true, state)
+    end
+
+    local dist_to_target = obj:position():distance_to(pos)
+    local move_type = dist_to_target > 10 and move.run_fwd or move.walk_fwd
+
+    -- Queue the move action
+    action(obj, move(move_type, pos, 1, move.default), cond(cond.time_end, 500))
+
+    -- Schedule release
+    local release_time = time_global() + 500
+    obj:set_fastcall(function(self)
+        if release_time < time_global() and self:get_script() and self:get_script_name() == "run_to_e" then
+            rest(self)
+            return true
+        end
+        return false
+    end, obj)
+end
+
+function on_enemy_eval(npc, enemy, flags)
+    local function matches_section(section)
+        for _, value in ipairs(passive_fauna) do
+            for _, npc_name in ipairs(value.npcs) do
+                if section == npc_name then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    
+
+    local npc_id = npc and npc:id()
+    local enemy_id = enemy and enemy:id()
+
+    if not npc_id or not enemy_id then
+        return
+    end
+
+    local agro_reaction_window = 30
+    local was_attacked, timeSinceAttack = is_npc_attacked(npc, agro_reaction_window)
+
+    if (matches_section(npc:section()) or matches_section(enemy:section())) then
+        if was_attacked then
+            if timeSinceAttack < agro_reaction_window then
+                flags.override = false  -- Allow attack
+                flags.ret_value = true
+            else
+                flags.override = true  -- Prevent attack
+                flags.ret_value = false
+                remove_attacked_npc_id(npc) -- Remove entry from attacked list
+            end
+        else
+            local dist = npc:position():distance_to(enemy:position())
+            if dist <= 5 and IsMonster(npc) and IsStalker(enemy) and check_ltx_contains_value(plugin_file_name, "passive_aggressive_fauna", npc:section()) then
+                if not cooldown_timer("check", "attacked") then
+                    add_attacked_npc_id(npc)
+                    cooldown_timer("mark", "attacked", 3)
+                end
+            elseif dist <= passive_spook_distance and IsMonster(npc) and IsStalker(enemy) then
+                local target_position = calculate_opposite_position(enemy:position(), npc:position())
+                run_to(npc, target_position)
+            end
+
+            flags.override = true  -- Prevent first attack
+            flags.ret_value = false
+        end
+    else
+        return
+    end
+end
+
+function force_rush_to_target(npc, enemy, flags)
+    local function matches_section(section)
+        for _, value in ipairs(special_spawns) do
+            if section == value then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function is_predator(npc)
+        if active_spawns then
+            for _, spawn in ipairs(active_spawns) do
+                if spawn.mutant_id == npc:id() and spawn.is_predator_mutant then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    if special_event_started() then
+        if is_safe_zone == false then
+            if matches_section(npc:section())  and (enemy:id() ~= db.actor:id()) then
+                local far_from_actor = (npc:position():distance_to(db.actor:position()) > 15)
+                if far_from_actor then
+                    flags.override = true  -- Prevent attack
+                    flags.ret_value = false
+                end
+            end
+        end
+    end
+    if player_safe == false then
+      if is_predator(npc) and (enemy:id() ~= db.actor:id()) then
+        local far_from_actor = (npc:position():distance_to(db.actor:position()) > 20)
+        if far_from_actor then
+            flags.override = true
+            flags.ret_value = false
+        end
+      end
+    end
+end
+
+function add_safe_zone_indicator()
+    actor_status.add_indicator("SafeZone", {
+        index = 14,
+        typ = "state",
+        functor = {"rebound_encounters", "get_safe_zone_status", true},
+        icon = "ui\\shelter_indicator\\StatusShelter.dds",
+        anim_icon = false,
+        anim_bk = false,
+    })
+    pr("-- RE:Bound Encounters: SafeZone indicator activated.")
+end
+
+function set_safe_zone_status(status)
+    is_safe_zone = status
+end
+
+function get_safe_zone_status(visual)
+    if visual then
+        if is_safe_zone == true then
+            return 1
+        elseif is_safe_zone == false then
+            return 0
+        end
+    end
+end
+
+function get_nearest_smart_from_mutant_commander(squad)
+    local distances = {}
+    local squad_commander = alife_object(squad:commander_id())
+    if not squad_commander then return nil end
+
+    local commander_position = squad_commander.position
+    for _, smart_id in ipairs(available_smart_terrains[level.name()]) do
+        local smart = alife_object(smart_id)
+        if smart then
+            local smart_pos = smart.position
+            local distance = commander_position:distance_to(smart_pos)
+            distances[smart_id] = distance
+        end
+    end
+
+    local sorted_smart_ids = {}
+    local smart_near_actor = get_nearest_smart_from_actor()
+
+    for smart_id, distance in pairs(distances) do
+        if (distance < 300) and (smart_near_actor == nil or smart_id ~= smart_near_actor) then
+            table.insert(sorted_smart_ids, {smart_id = smart_id, distance = distance})
+        end
+    end
+
+    table.sort(sorted_smart_ids, function(a, b) return a.distance < b.distance end)
+
+    if #sorted_smart_ids > 0 then
+        return sorted_smart_ids[1].smart_id
+    else
+        return nil
+    end
+end
+
+function get_nearest_smart_from_actor()
+	local distances = {}
+	local actor_pos = db.actor:position()
+	
+	for _, smart_id in ipairs(available_smart_terrains[level.name()]) do
+		local smart = alife_object(smart_id)
+		if smart then
+			local smart_pos = smart.position
+			local distance = actor_pos:distance_to(smart_pos)
+			distances[smart_id] = distance
+		end
+	end
+
+    local sorted_smart_ids = {}
+
+	for smart_id, distance in pairs(distances) do
+		if distance < 200 then 
+			table.insert(sorted_smart_ids, {smart_id = smart_id, distance = distance})
+		end
+	end
+		
+	table.sort(sorted_smart_ids, function(a, b) return a.distance < b.distance end)
+
+    if #sorted_smart_ids > 0 then
+        return sorted_smart_ids[1].smart_id
+      else
+        return nil
+    end
+end
+
+function get_all_smart_terrain_ids_current_level()
+    local current_level_name = level.name()
+    local smart_terrain_ids = {}
+
+    for i = 1, MAX_SMART_ID do
+        local smart = alife_object(i)
+        if smart and smart:clsid() == clsid.smart_terrain then
+            local smart_level_name = get_se_obj_level_name(smart)
+            if smart_level_name == current_level_name then
+                table.insert(smart_terrain_ids, smart.id)
+            end
+        end
+    end
+
+    shuffle_table(smart_terrain_ids)
+
+    return smart_terrain_ids
+end
+
+function print_passive_fauna_data()
+    pr("-- RE:Bound: Passive Fauna Data:")
+    collect_passive_squad_sections()
+
+    local function print_section(title, data)
+        if #data > 0 then
+            pr(string.format("* %s:", title))
+            for i, item in ipairs(data) do
+                pr(string.format("  - %s", item))
+            end
+        else
+            pr(string.format("* %s: (Empty)", title))
+        end
+    end
+
+    print_section("Passives Available", passives_available)
+
+    local fauna_data = {}
+    for i, fauna in ipairs(passive_fauna) do
+        local npcs_list = #fauna.npcs > 0 and table.concat(fauna.npcs, ", ") or "(Empty)"
+        table.insert(fauna_data, npcs_list)
+    end
+    print_section("Passive Fauna (Config)", fauna_data)
+
+    local active_squad_data = {}
+    for i, squad in ipairs(active_passive_squad) do
+        local npc = alife_object(squad.npc_id)
+        if npc then
+            local npc_name = npc and npc:name() or "Unknown NPC"
+            local distance = npc and npc.position and db.actor:position():distance_to(npc.position) or "N/A"
+            table.insert(active_squad_data, string.format("npc_id=%d, name=%s, distance=%.2f", squad.npc_id, npc_name, distance))
+        end
+    end
+    print_section("Active Passive Squad", active_squad_data)
+
+    pr("----------------------------------")
+end
+
+function spawn_passive_squads_near_actor()
+    local smart_terrain_ids = get_all_smart_terrain_ids_current_level()
+    collect_passive_squad_sections()
+    local spawn_threshold = 3
+
+    if active_passive_squad and (#active_passive_squad < spawn_threshold) then
+        local actor_pos = db.actor:position()
+        local nearest_smart_id = nil
+        local nearest_distance = math.huge
+
+        for _, smart_id in ipairs(smart_terrain_ids) do
+            local smart = alife_object(smart_id)
+            if smart then
+                local distance = actor_pos:distance_to(smart.position)
+                if distance >= 60 and distance <= 300 and distance < nearest_distance then
+                    nearest_smart_id = smart_id
+                    nearest_distance = distance
+                end
+            end
+        end
+
+        if nearest_smart_id and #passives_to_spawn > 0 then
+            local random_squad = passives_to_spawn[math.random(1, #passives_to_spawn)].sec
+            local squad = SIMBOARD:create_squad(alife_object(nearest_smart_id), random_squad)
+            if squad then
+                for member in squad:squad_members() do
+                    table.insert(active_passive_squad, {
+                        squad_id = squad.id,
+                        npc_id = member.id
+                    })
+                end
+                pr("-- Re:Bound - Spawned passive squad [%s] at smart terrain ID [%s]", random_squad, nearest_smart_id)
+            else
+                pr("! Re:Bound - Failed to spawn squad at smart terrain ID [%s]", nearest_smart_id)
+            end
+        else
+            pr("! Re:Bound - No suitable smart terrain found for spawning or no squads available.")
+        end
+    else
+        pr("! Re:Bound - Spawn threshold reached. No more passive squads will be spawned.")
+    end
+end
+
+function FindWitness(victim, who, same_as_victim, same_as_who, not_in_combat, can_see)
+    local comm = victim and character_community(victim)
+    local comm_sender
+    local comm_who = who and character_community(who)
+    local who_id = who and who:id()
+    local t = {}
+    can_see = can_see or nil
+  
+    for i = 1, #db.OnlineStalkers do
+      if (who_id == nil) or (db.OnlineStalkers[i] ~= who_id) then
+        local st = db.storage[db.OnlineStalkers[i]]
+        local npc = st and st.object
+        local faction = nil
+        if npc and npc:character_community() then 
+            faction = npc:character_community()
+        end
+        if (npc and IsStalker(npc) and npc:alive() and (faction ~= "zombied") and not get_object_story_id(db.OnlineStalkers[i])) then
+          if (not_in_combat == nil) or (not_in_combat and not npc:best_enemy()) or (not_in_combat ~= true) then
+            comm_sender = npc:character_community()
+            if (same_as_victim == nil) or (same_as_victim and comm_sender == comm) or (same_as_victim == false and comm_sender ~= comm) then
+                if (same_as_who == nil) or (same_as_who and comm_sender == comm_who) or (same_as_who == false and comm_sender ~= comm_who) then
+                    if (can_see == nil) or (can_see and npc:see(who)) or (can_see == false) then
+                        t[#t + 1] = npc
+                    end
+                end
+            end
+          end
+        end
+      end
+    end
+  
+    if #t == 0 then
+      return nil
+    end
+    return t[math.random(#t)]
+end
+
+function FindFriendlyWitness(victim, who, same_as_victim, same_as_who, not_in_combat, can_see)
+    local comm = victim and character_community(victim)
+    local comm_sender
+    local comm_who = who and character_community(who)
+    local who_id = who and who:id()
+    local t = {}
+    can_see = can_see or nil
+
+    for i = 1, #db.OnlineStalkers do
+        if (who_id == nil) or (db.OnlineStalkers[i] ~= who_id) then
+            local st = db.storage[db.OnlineStalkers[i]]
+            local npc = st and st.object
+            local faction = nil
+            if npc and npc:character_community() then 
+                faction = npc:character_community()
+            end
+            if (npc and IsStalker(npc) and npc:alive() and (faction ~= "zombied") and not get_object_story_id(db.OnlineStalkers[i])) then
+                if (not_in_combat == nil) or (not_in_combat and not npc:best_enemy()) or (not_in_combat ~= true) then
+                    comm_sender = npc:character_community()
+                    if (same_as_victim == nil) or (same_as_victim and comm_sender == comm) or (same_as_victim == false and comm_sender ~= comm) then
+                        if (same_as_who == nil) or (same_as_who and comm_sender == comm_who) or (same_as_who == false and comm_sender ~= comm_who) then
+                            if not game_relations.is_factions_enemies(character_community(db.actor), comm_sender) then
+                                if (can_see == nil) or (can_see and npc:see(who)) or (can_see == false) then
+                                    t[#t + 1] = npc
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if #t == 0 then
+        return nil
+    end
+    return t[math.random(#t)]
+end
+
+function FindRandomStalker()
+    local t = {}
+
+    for i = 1, #db.OnlineStalkers do
+        local st = db.storage[db.OnlineStalkers[i]]
+        local npc = st and st.object
+        local faction = nil
+        if npc and npc:character_community() then 
+            faction = npc:character_community()
+        end
+        if (npc and IsStalker(npc) and npc:alive() and (faction ~= "zombied") and not get_object_story_id(db.OnlineStalkers[i]) and not npc:best_enemy()) then
+            t[#t + 1] = npc
+        end
+    end
+
+    if #t == 0 then
+        return nil
+    end
+    return t[math.random(#t)]
+end
+
+function send_tip(msg, sender, showtime)
+
+    xr_sound.set_sound_play(AC_ID, "pda_alarm")
+
+    local actor = db.actor
+    local sender_name = sender:character_name()
+    local texture = sender:character_icon()
+
+	actor:give_game_news(sender_name, msg, texture, 1000, showtime*1000)
+
+end
+
+function check_player_safety()
+    actor_in_safe_zone = check_actor_in_safe_zone()
+    actor_is_near_lighted_campfire = is_actor_near_lighted_campfire(10)
+    is_actor_safe()
+    toggle_predator_targeting()
+    clear_vanilla_mutant_targets(player_safe)
+    check_sheltered_status_changed()
+end
+
+function check_sheltered_status_changed()
+    local current_sheltered_status = actor_in_safe_zone or actor_is_indoors or actor_is_near_lighted_campfire
+    if current_sheltered_status ~= last_sheltered_status then
+        last_sheltered_status = current_sheltered_status
+        if current_sheltered_status then
+            pr("Actor has entered sheltered status, retargeting vanilla mutants.")
+            retarget_vanilla_mutants()
+        end
+    end
+end
+
+function calculate_smart_distances()
+	local distances = {}
+	local actor_pos = db.actor:position()
+	
+	for _, smart_id in ipairs(available_smart_terrains[level.name()]) do
+		local smart = alife_object(smart_id)
+		if smart then
+		local smart_pos = smart.position
+		local distance = actor_pos:distance_to(smart_pos)
+		distances[smart_id] = distance
+		end
+	end
+	
+	return distances
+end
+
+function get_sorted_smart_ids()
+	local distances = calculate_smart_distances()
+	local sorted_smart_ids = {}
+
+	for smart_id, distance in pairs(distances) do
+		if (distance > safe_radius) and (distance < (safe_radius + 100)) then
+			table.insert(sorted_smart_ids, {smart_id = smart_id, distance = distance})
+		end
+	end
+		
+	table.sort(sorted_smart_ids, function(a, b) return a.distance < b.distance end)
+
+	local result = {}
+	for i,entry in ipairs(sorted_smart_ids) do
+		result[i] = entry.smart_id
+	end
+
+	return result
+end
+
+function ease_in_out(t)
+    return t * t * (3 - 2 * t)
+end
+
+function get_dynamic_weights(player_rank_value)
+    local base = {50, 30, 15, 5} -- starting weights
+    local max_rank = 8
+
+    local factor = math.min(player_rank_value / max_rank, 1)
+    factor = ease_in_out(factor)
+
+    local w1 = base[1] - (base[1] * 0.7 * factor)
+    local w2 = base[2] - (base[2] * 0.5 * factor)
+    local w3 = base[3] + (base[1] * 0.4 * factor)
+    local w4 = base[4] + (base[2] * 0.3 * factor)
+
+    return {math.floor(w1), math.floor(w2), math.floor(w3), math.floor(w4)}
+end
+
+function choose_threat_level(max_threat_level, player_rank_value)
+    local weights = get_dynamic_weights(player_rank_value)
+    local cumulative, total = {}, 0
+
+    for i = 1, max_threat_level do
+        total = total + weights[i]
+        cumulative[i] = total
+    end
+
+    if total == 0 then
+        return 1
+    end
+
+    local r = math.random(1, total)
+    for i = 1, max_threat_level do
+        if r <= cumulative[i] then
+            return i
+        end
+    end
+
+    return max_threat_level
+end
+
+function spawn_random_mutants_outside_safe_zone()
+    local nearest_smarts = get_sorted_smart_ids()
+    local current_map_name = tostring(level.name())
+    local base_map_threat_level = tonumber(read_ltx_section(plugin_file_name, "map_threat_level", current_map_name)) or 4
+    local map_threat_level = base_map_threat_level
+    local player_rank_value = get_rank_value(db.actor:character_rank())
+
+    if base_map_threat_level > 1 then
+        if player_rank_value <= 2 then
+            map_threat_level = math.min(base_map_threat_level, 1)
+        elseif player_rank_value <= 4 then
+            map_threat_level = math.min(base_map_threat_level, 2)
+        end
+    end
+
+    -- Pick tier dynamically based on player rank and map cap
+    local chosen_threat_level = choose_threat_level(map_threat_level, player_rank_value)
+
+    local simulation_squad_to_spawn = nil
+    local simulation_section = is_day() and string.format("simulation_day_mutants_%d", chosen_threat_level) or string.format("simulation_night_mutants_%d", chosen_threat_level)
+
+    local simulation_squads = get_list_from_ltx(plugin_file_name, simulation_section)
+
+    if simulation_squads and #simulation_squads > 0 then
+        simulation_squad_to_spawn = simulation_squads[math.random(1, #simulation_squads)]
+    else
+        pr("No simulation squads found for section: %s", simulation_section)
+        return
+    end
+
+    if not simulation_squad_to_spawn then
+        pr("No suitable squad found for spawning within safe zone.")
+        return
+    end
+
+    for _, smart_id in ipairs(nearest_smarts) do
+        local smart = alife_object(smart_id)
+        if smart then
+            local is_in_fov = is_smart_in_fov(smart.position)
+
+            if not is_in_fov then
+                local squad = SIMBOARD:create_squad(smart, simulation_squad_to_spawn)
+                if squad then
+                    squad.scripted_target = "actor"
+                    squad.rush_to_target = true
+                    pr("-- Re:Bound - Spawning Random Vanilla Mutants due to prolonged downtime. Map: %s, Threat Level: %s, Squad: %s", current_map_name, tostring(chosen_threat_level), simulation_squad_to_spawn)
+                    game_timer("mark", 5)
+                    spawn_accumulator = 0 -- reset after spawn
+                    return
+                end
+            end
+        end
+    end
+end
+
+function is_smart_in_fov(position)
+    if not position then return false end
+
+    local ui_position = game.world2ui(position)
+
+    return ui_position and (ui_position.x > 0 and ui_position.x < 1024) and (ui_position.y > 0 and ui_position.y < 768)
+end
+
+function is_current_map_exempt()
+    local current_map_name = tostring(level.name())
+    for _, map_name in ipairs(map_exemptions) do
+        if map_name == current_map_name then
+            return true
+        end
+    end
+    return false
+end
+
+function is_actor_near_lighted_campfire(radius)
+	local pos = db.actor:position()
+	for id,binder in pairs(bind_campfire.campfires_all) do
+		if (binder and binder.campfire and binder.campfire:is_on()) then
+			if (pos:distance_to_sqr(binder.object:position()) <= radius) then
+				return true
+			end
+		end 
+	end 
+	return false
+end
+
+function count_squads_in_radius(squad_type, position, radius)
+  local count = 0
+
+  for id, _ in pairs(SIMBOARD.squads) do
+    local squad = alife_object(id)
+
+    if squad and squad.online then
+      local commander = alife_object(squad:commander_id())
+      if commander then
+        local distance = position:distance_to(commander.position)
+
+        if distance <= radius then
+          if squad_type == "all" then
+            count = count + 1
+          elseif squad_type == "monster" and string.find(squad.player_id, "monster") then
+            count = count + 1
+          elseif squad_type == "stalker" and not string.find(squad.player_id, "monster") then
+            count = count + 1
+          end
+        end
+      end
+    end
+  end
+  pr(" -- RE:Bound - number of squads in radius: %s", count)
+  return count
+end
+
+--[[ New function to spawn a mutant squad on eligible smart terrains
+function spawn_mutant_squad_on_eligible_smart()
+    local current_map_name = tostring(level.name())
+
+    -- Check if the current map is exempt
+    if is_current_map_exempt() then
+        pr("!Current map [%s is exempt from spawning.", current_map_name)
+        return
+    end
+
+    local base_map_threat_level = tonumber(read_ltx_section(plugin_file_name, "map_threat_level", current_map_name)) or 4
+    local map_threat_level = base_map_threat_level
+    local player_rank_value = get_rank_value(db.actor:character_rank())
+
+    if base_map_threat_level > 1 then
+        if player_rank_value <= 2 then
+            map_threat_level = math.min(base_map_threat_level, 1)
+        elseif player_rank_value <= 4 then
+            map_threat_level = math.min(base_map_threat_level, 2)
+        end
+    end
+
+    -- Pick tier dynamically based on player rank and map cap
+    local chosen_threat_level = choose_threat_level(map_threat_level, player_rank_value)
+
+    local simulation_squad_to_spawn = nil
+    local simulation_section = is_day() and string.format("simulation_day_mutants_%d", chosen_threat_level) or string.format("simulation_night_mutants_%d", chosen_threat_level)
+
+    local simulation_squads = get_list_from_ltx(plugin_file_name, simulation_section)
+
+    if simulation_squads and #simulation_squads > 0 then
+        -- Iterate through available smart terrains to find an eligible one
+        for _, smart_id in ipairs(available_smart_terrains[current_map_name] or {}) do
+            local smart = alife_object(smart_id)
+
+            if smart then
+                local smart_cur_pop = count_squads_in_radius("monster", smart.position, 20)
+                local smart_name = smart:name() or smart:section_name() or "<empty>"
+
+                local outside_safe_radius = se_obj_outside_spawn_radius(smart, safe_radius)
+                local is_in_fov = is_smart_in_fov(smart.position)
+
+                -- Check if the smart terrain has 0 population, is outside safe radius, and is not in fov
+                if smart_cur_pop == 0 and outside_safe_radius and not is_in_fov then
+                    -- Spawn the squad on the eligible smart terrain
+                    simulation_squad_to_spawn = simulation_squads[math.random(1, #simulation_squads)]
+                    local squad = SIMBOARD:create_squad(smart, simulation_squad_to_spawn)
+                    if squad then
+                        pr("-- Re:Bound - Spawning extra vanilla squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart_id)
+                    else
+                        pr("! Re:Bound - Failed to spawn squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart_id)
+                    end
+                else
+                    pr("! Re:Bound - Smart [%s] (ID: %s) is not eligible for spawning (population: %s, outside radius: %s, is in fov: %s)", smart_name, smart_id, smart_cur_pop, tostring(outside_safe_radius), tostring(is_in_fov))
+                end
+            end
+        end
+    else
+        pr("No simulation squads found for section: %s", simulation_section)
+    end
+end]]
+
+function spawn_mutant_squad_on_eligible_smart()
+    local current_map_name = tostring(level.name())
+
+    -- Check if the current map is exempt
+    if is_current_map_exempt() then
+        pr("!Current map [%s is exempt from spawning.", current_map_name)
+        return
+    end
+
+    local base_map_threat_level = tonumber(read_ltx_section(plugin_file_name, "map_threat_level", current_map_name)) or 4
+    local map_threat_level = base_map_threat_level
+    local player_rank_value = get_rank_value(db.actor:character_rank())
+
+    if base_map_threat_level > 1 then
+        if player_rank_value <= 2 then
+            map_threat_level = math.min(base_map_threat_level, 1)
+        elseif player_rank_value <= 4 then
+            map_threat_level = math.min(base_map_threat_level, 2)
+        end
+    end
+
+    -- Pick tier dynamically based on player rank and map cap
+    local chosen_threat_level = choose_threat_level(map_threat_level, player_rank_value)
+
+    local simulation_squad_to_spawn = nil
+    local simulation_section = is_day() and string.format("simulation_day_mutants_%d", chosen_threat_level) or string.format("simulation_night_mutants_%d", chosen_threat_level)
+
+    local simulation_squads = get_list_from_ltx(plugin_file_name, simulation_section)
+
+    if simulation_squads and #simulation_squads > 0 then
+        -- Iterate through all objects to find smart terrains
+        for i = 1, MAX_SMART_ID do
+            local smart = alife_object(i)
+
+            if smart and (smart:clsid() == clsid.smart_terrain) then
+                local smart_level_name = get_se_obj_level_name(smart)
+                if smart_level_name == current_map_name then
+                    local smart_cur_pop = count_squads_in_radius("all", smart.position, 40)
+                    local smart_name = smart:name() or smart:section_name() or "<empty>"
+
+                    local outside_safe_radius = se_obj_outside_spawn_radius(smart, safe_radius)
+                    local is_in_fov = is_smart_in_fov(smart.position)
+
+                    -- Check if the smart terrain has 0 population, is outside safe radius, and is not in fov
+                    if smart_cur_pop == 0 and outside_safe_radius and not is_in_fov then
+                        -- Spawn the squad on the eligible smart terrain
+                        simulation_squad_to_spawn = simulation_squads[math.random(1, #simulation_squads)]
+                        local squad = SIMBOARD:create_squad(smart, simulation_squad_to_spawn)
+                        if squad then
+                            pr("-- Re:Bound - Spawning extra vanilla squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart.id)
+                        else
+                            pr("! Re:Bound - Failed to spawn squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart.id)
+                        end
+                    else
+                        pr("! Re:Bound - Smart [%s] (ID: %s) is not eligible for spawning (population: %s, outside radius: %s, is in fov: %s)", smart_name, smart.id, smart_cur_pop, tostring(outside_safe_radius), tostring(is_in_fov))
+                    end
+                end
+            end
+        end
+    else
+        pr("No simulation squads found for section: %s", simulation_section)
+    end
+end
+
+-- functions for dev purposes only
+function on_key_press(key)
+    if key == DIK_keys["DIK_U"] and enable_debug then
+        get_spawnable_squads_report()
+        news_manager.send_tip(db.actor, string.format("-- RE:Bound Encounters - Open console for Spawnable Squads Report"), nil,nil, 3000)
+    end
+    if key == DIK_keys["DIK_I"] and enable_debug then
+        get_active_spawns_report()
+        news_manager.send_tip(db.actor, string.format("-- RE:Bound Encounters - Open console for Active Spawns Report"), nil,nil, 3000)
+    end
+
+    if key == DIK_keys["DIK_O"] and enable_debug then
+        print_passive_fauna_data()
+        news_manager.send_tip(db.actor, string.format("-- RE:Bound Encounters - Open console for Passive Fauna Report"), nil,nil, 3000)
+    end
+
+    if key == DIK_keys["DIK_P"] and enable_debug then
+        delete_mutants()
+        get_current_game_values()
+        news_manager.send_tip(db.actor, string.format("All active spawns deleted. Saving your game now will make it free from all RE:Spawn mutants. ACTIVE SPAWNS: %d", #active_spawns), nil,nil, 3000)
+    end
+
+end
+
+function remove_safe_zone_indicator()
+    actor_status.add_indicator("SafeZone", nil)
+    pr("-- RE:Bound Encounters: SafeZone indicator removed.")
+end
+
+function actor_on_sleep(hours)
+    game_timer("mark", 5)
+    spawn_accumulator = 0
+    if hours > 3 then
+        if count_non_respawn_squads() == 0 then
+            spawn_mutant_squad_on_eligible_smart()
+        else
+            pr("RE:Bound - Existing non-respawn spawns detected. Skipping spawn attempt.")
+        end
+        retarget_vanilla_mutants()
+    end
+end
+
+function actor_on_footstep()
+    passive_spook_distance = 15
+    if IsMoveState('mcSprint') then
+        passive_spook_distance = 30
+    elseif IsMoveState('mcCrouch') then
+        passive_spook_distance = 10
+        if IsMoveState('mcAccel') then
+            passive_spook_distance = 5
+        end
+    end
+end
+
+function on_game_start()
+    cooldown_timer("initialize")
+    RegisterScriptCallback("actor_on_update", actor_on_update)
+    RegisterScriptCallback("monster_on_loot_init", monster_on_loot_init)
+    RegisterScriptCallback("monster_on_death_callback", monster_on_death_callback)
+    RegisterScriptCallback("server_entity_on_unregister", server_entity_on_unregister)
+    RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+    RegisterScriptCallback("save_state", save_state)
+    RegisterScriptCallback("load_state", load_state)
+    RegisterScriptCallback("on_before_level_changing", on_before_level_changing)
+    RegisterScriptCallback("on_option_change", fetch_values)
+    RegisterScriptCallback("GUI_on_hide", actor_sleeping)
+    RegisterScriptCallback("GUI_on_show", actor_sleeping)
+    RegisterScriptCallback("actor_on_sleep", actor_on_sleep)
+    RegisterScriptCallback("monster_on_hit_callback", monster_on_hit_callback)
+    RegisterScriptCallback("npc_on_hit_callback", npc_on_hit_callback)
+    RegisterScriptCallback("on_key_press", on_key_press)
+    RegisterScriptCallback("anomaly_on_before_activate", anomaly_on_before_activate)
+    RegisterScriptCallback("on_enemy_eval", on_enemy_eval)
+    RegisterScriptCallback("on_enemy_eval", force_rush_to_target)
+    RegisterScriptCallback("actor_on_footstep", actor_on_footstep)
+end

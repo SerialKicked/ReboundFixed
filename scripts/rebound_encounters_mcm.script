@@ -1,0 +1,102 @@
+local defaults = {
+    ["spawn_time_delay_min"] = 2,
+    ["spawn_time_delay_max"] = 6,
+    ["safe_radius"] = 60,
+    ["day_start"] = 6,
+    ["day_end"] = 20,
+    ["boss_spawn_probability"] = 30,
+    ["predator_spawn_probability"] = 40,
+    ["wipe_mutants_on_level_change"] = true,
+    ["enable_ignore_smart_population"] = false,
+    ["enable_all_maps_spawning"] = true,
+    ["enable_boss_is_night_only"] = true,
+    ["enable_spawn_reserve"] = false,
+    ["enable_goodwill_penalty"] = true,
+    ["enable_debug"] = false,
+    ["enable_random_vanilla_mutants"] = true, -- toggle option to spawn random vanilla mutants on smart terrains
+    ["enable_sheltered_indicator"] = true,
+    ["accumulator_threshold"] = 30
+}
+
+local installed_mutants = {} -- Table to store installed mutants
+
+
+-- Define the get_config function
+function get_config(key)
+    if ui_mcm then
+        return ui_mcm.get("rebound_encounters/"..key)
+    else
+        return defaults[key]
+    end
+end
+
+function on_mcm_load()
+
+    installed_mutants = collect_installed_respawn_mutants()
+
+    for i, mutant in ipairs(installed_mutants) do
+        defaults[mutant] = true
+    end
+
+    local gr_elements = {
+        { id = "title", type = "slide", link = "rebound_encounters_main_mcm_banner", text = "", spacing = 20 },
+        { id = "line", type = "line" },
+        { id = "spawn_time_delay_min", type = "track", val = 2, min = 1, max = 12, step = 1, def = 2 },
+        { id = "spawn_time_delay_max", type = "track", val = 2, min = 1, max = 12, step = 1, def = 6 },
+        { id = "safe_radius", type = "track", val = 2, min = 40, max = 100, step = 1, def = 60 },
+        { id = "day_start", type = "track", val = 2, min = 0, max = 23, step = 1, def = 6 },
+        { id = "day_end", type = "track", val = 2, min = 0, max = 23, step = 1, def = 20 },
+        { id = "boss_spawn_probability", type = "track", val = 2, min = 0, max = 100, step = 1, def = 30 },
+        { id = "predator_spawn_probability", type = "track", val = 2, min = 0, max = 100, step = 1, def = 40 },
+        { id = "more_options", type = "slide", link = "rebound_encounters_more_options_banner", text = "", spacing = 20 },
+        { id = "wipe_mutants_on_level_change", type = "check", val = 1, def = true },
+        { id = "enable_ignore_smart_population", type = "check", val = 1, def = false },
+        { id = "enable_all_maps_spawning", type = "check", val = 1, def = true },
+        { id = "enable_boss_is_night_only", type = "check", val = 1, def = true },
+        { id = "enable_spawn_reserve", type = "check", val = 1, def = false },
+        { id = "enable_goodwill_penalty", type = "check", val = 1, def = true },
+        { id = "line1", type = "line" },
+        { id = "enable_sheltered_indicator", type = "check", val = 1, def = true },
+        { id = "line2", type = "line" },
+        { id = "enable_random_vanilla_mutants", type = "check", val = 1, def = true },
+        { id = "desc1", type = "desc", text= "ui_mcm_rebound_encounters_random_vanilla_mutants_description", clr = {255,180,180,180}},
+        { id = "accumulator_threshold", type = "track", val = 2, min = 30, max = 90, step = 1, def = 30 },
+        { id = "enable_accumulator_reset_on_npc_attack", type = "check", val = 1, def = true },
+        { id = "line3", type = "line" },
+        { id = "enable_debug", type = "check", val = 1, def = false },
+        { id = "desc2", type = "desc", text= "ui_mcm_rebound_encounters_delete_mutants_instructions", clr = {255,180,180,180}},
+        { id = "line4", type = "line" },
+        { id = "desc3", type = "desc", text= "ui_mcm_rebound_encounters_toggle_individual_mutant_spawning", clr = {255,180,180,180}},
+    }
+
+    -- Loop through the installed_mutants and create a checkbox for each
+    for i, mutant in ipairs(installed_mutants) do
+        local checkbox = {
+            id = mutant,
+            type = "check",
+            val = 1,
+            def = true,
+        }
+        table.insert(gr_elements, checkbox)
+    end
+
+    op = {
+        id = "rebound_encounters",
+        sh = true,
+        gr = gr_elements
+    }
+    return op
+end
+
+-- Function to collect installed mutant sections
+function collect_installed_respawn_mutants()
+    local installed_respawn_mutants = {}
+
+    ini_sys:section_for_each(function(sec)
+        if string.find(sec, "respawn_") then
+            table.insert(installed_respawn_mutants, sec)
+        end
+    end)
+
+    return installed_respawn_mutants
+end

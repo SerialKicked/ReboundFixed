@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="windows-1251"?>
+
+<string_table>
+
+	<string id="st_m2_gas_canister">
+		<text>M2 liquid gas canister</text>
+	</string>
+
+	<string id="st_m2_gas_canister_descr">
+		<text>Liquid gas for the M2-flamethrower.</text>
+	</string>
+
+	<string id="st_f35_gas_canister">
+		<text>F35 liquid gas canister</text>
+	</string>
+
+	<string id="st_f35_gas_canister_descr">
+		<text>Liquid gas for the flammenwerfer-35 flamethrower.</text>
+	</string>
+
+	<string id="st_m2_flamethrower">
+		<text>M2-Flamethrower</text>
+	</string>
+
+	<string id="st_m2_flamethrower_descr">
+		<text>The ultimate weapon for killing the new mutants!</text>
+	</string>
+
+	<string id="st_f35_flamethrower">
+		<text>F-35 flamethrower</text>
+	</string>
+
+	<string id="st_f35_flamethrower_descr">
+		<text>Flammenwerfer-35, not as good as killing new mutants as the big M2, but still gets the job done!</text>
+	</string>
+
+</string_table>
+

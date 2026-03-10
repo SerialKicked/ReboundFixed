@@ -1,0 +1,2048 @@
+-- Explosion and Area Of Effect generator for Molotov, with optional Damage Over Time functions
+-- Projectile class for creating particle-based projectiles with collision detection, damage and AOE
+-- Generally can be used for any throwable that requires custom code for damage
+
+local print_tip = function(s, ...)
+    local f = print_tip or printf
+    return f("AOE: " .. s, ...)
+end
+
+-- Merge tables into table1
+local function table_merge(table1, ...)
+	local t = {...}
+	for i = 1, #t do
+		for k, v in pairs(t[i]) do
+			table1[k] = v
+		end
+	end
+	return table1
+end
+
+-- Check if dir2 is to the left of dir1
+local function angle_left_xz(dir1, dir2)
+	local dir1 = vector():set(dir1.x, 0, dir1.z)
+	local dir2 = vector():set(dir2.x, 0, dir2.z)
+	local dir_res = vector():set(VEC_ZERO):crossproduct(dir1, dir2)
+	return dir_res.y <= 0
+end
+
+-- Linear inter/extrapolation
+local function lerp(a, b, f)
+    if a and b and f then
+        return a + f * (b - a)
+    else
+        return a or b or 0
+    end
+end
+
+-- Wrapper for AddUniqueCall that checks for time_global update before executing function
+local function throttle(func, tg_throttle)
+	local tg = 0
+	if not tg_throttle or tg_throttle == 0 then
+		return function(...)
+			local t = time_global()
+			if t ~= tg then
+				tg = t
+				return func(...)
+			end
+		end
+	else
+		return function(...)
+			local t = time_global()
+			if t < tg then return end
+			tg = t + tg_throttle
+			return func(...)
+		end
+	end
+end
+
+-- Check material of geometry_ray ray collisiton
+function not_passable(geometry_ray_instance)
+	if not geometry_ray_instance then return true end
+
+	local result = geometry_ray_instance.ray:get_result()
+	if  result
+    and result.material_name
+    and result.material_shoot_factor
+    then
+        local name = result.material_name
+        local shoot_factor = result.material_shoot_factor
+
+        if false 
+        or string.find(name, "bush") 
+        or string.find(name, "water")
+        or geometry_ray_instance:isMaterialFlag("flShootable") and shoot_factor <= 0.01
+        then
+            return false
+        else
+        	return true
+        end
+    end
+    return true
+end
+
+hit_type_to_artefact = {
+	[HitTypeID["Burn"]]         	= "burn_immunity",
+	[HitTypeID["LightBurn"]]        = "burn_immunity",
+	[HitTypeID["Shock"]]        	= "shock_immunity",
+	[HitTypeID["ChemicalBurn"]] 	= "chemical_burn_immunity",
+	[HitTypeID["Radiation"]]    	= "radiation_immunity",
+	[HitTypeID["Telepatic"]]    	= "telepatic_immunity",
+	[HitTypeID["Wound"]]        	= "wound_immunity",
+	[HitTypeID["Wound_2"]]        	= "wound_2_immunity",
+	[HitTypeID["FireWound"]]    	= "fire_wound_immunity",
+	[HitTypeID["Strike"]]       	= "strike_immunity",
+	[HitTypeID["Explosion"]]    	= "explosion_immunity",
+}
+
+hit_type_to_booster = {
+	[HitTypeID["Burn"]]         	= BoosterID["BurnImmunity"],
+	[HitTypeID["LightBurn"]]        = BoosterID["BurnImmunity"],
+	[HitTypeID["Shock"]]        	= BoosterID["ShockImmunity"],
+	[HitTypeID["ChemicalBurn"]] 	= BoosterID["ChemicalBurnProtection"],
+	[HitTypeID["Radiation"]]    	= BoosterID["RadiationProtection"],
+	[HitTypeID["Telepatic"]]    	= BoosterID["TelepaticProtection"],
+	[HitTypeID["Wound"]]        	= BoosterID["WoundImmunity"],
+	[HitTypeID["Wound_2"]]        	= BoosterID["WoundImmunity"],
+	[HitTypeID["FireWound"]]    	= BoosterID["FireWoundImmunity"],
+	[HitTypeID["Strike"]]       	= BoosterID["StrikeImmunity"],
+	[HitTypeID["Explosion"]]    	= BoosterID["ExplImmunity"],        
+}
+
+hit_type_to_coeff = {
+	[HitTypeID["Burn"]]         	= 10,
+	[HitTypeID["LightBurn"]]        = 10,
+	[HitTypeID["Shock"]]        	= 1,
+	[HitTypeID["ChemicalBurn"]] 	= 10,
+	[HitTypeID["Radiation"]]    	= 100,
+	[HitTypeID["Telepatic"]]    	= 10,
+	[HitTypeID["Wound"]]        	= 10,
+	[HitTypeID["Wound_2"]]        	= 10,
+	[HitTypeID["FireWound"]]    	= 1,
+	[HitTypeID["Strike"]]       	= 10,
+	[HitTypeID["Explosion"]]    	= 10,
+}
+
+hit_type_to_particles = {
+	[hit.light_burn] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.burn] = {
+		particle = "anomaly2\\effects\\heat_center",
+		offset = {0, -2, 0},
+	},
+	[hit.strike] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.shock] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.wound] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.radiation] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.telepatic] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.chemical_burn] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.explosion] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.fire_wound] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+}
+hit_type_to_explosion_particles = {
+	[hit.light_burn] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.burn] = {
+		particle = "amik\\explosion\\data\\expl_rpg",
+		offset = {0, 0, 0},
+	},
+	[hit.strike] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.shock] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.wound] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.radiation] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.telepatic] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.chemical_burn] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.explosion] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+	[hit.fire_wound] = {
+		particle = "artefact\\artefact_gravi",
+		offset = {0, 0, 0},
+	},
+}
+
+local refresh_health_bar = ui_enemy_health.on_hit
+function refresh_health(npc, who)
+	if npc:id() == AC_ID then
+		return
+	end
+
+	if not (IsStalker(npc) or IsMonster(npc)) then
+		return
+	end
+
+	if not (npc.alive and npc:alive()) then
+		return
+	end
+
+	if not (who and who:id() == AC_ID) then
+		return
+	end
+
+	if npc.health > 0 then
+		CreateTimeEvent("AOE_health_bar", "AOE_health_bar", 0, function()
+			refresh_health_bar(npc, nil, nil, who, "")
+			return true
+		end)
+		return
+	end
+end
+
+function get_actor_protection(hit_type_id, outfit_k, helmet_k, artefact_k, booster_k)
+	local hit_type_rad = type(hit_type_id) == "number" and hit_type_id or hit[hit_type_id]
+	local actor = db.actor
+	local coeff = hit_type_to_coeff[hit_type_rad]
+	local outfit_k = outfit_k or coeff
+	local helmet_k = helmet_k or coeff
+	local artefact_k = artefact_k or coeff
+	local booster_k = booster_k or coeff
+
+	--Calculate new power
+	local hit_additional = 0
+
+	-- Outfit protection
+	local outfit = actor:item_in_slot(7)
+	if outfit then
+		local c_obj = outfit:cast_CustomOutfit()
+		local prot = c_obj and c_obj:GetDefHitTypeProtection(hit_type_rad) or 0
+
+		hit_additional = hit_additional + prot * outfit_k
+	end
+
+	-- Helmet protection
+	local helm = actor:item_in_slot(12)
+	if helm then
+		local c_obj = helm:cast_Helmet()
+		local prot = c_obj and c_obj:GetDefHitTypeProtection(hit_type_rad) or 0
+
+		hit_additional = hit_additional + prot * helmet_k
+	end
+
+	-- Artefacts protection
+	if hit_type_to_artefact[hit_type_rad] then
+		actor:iterate_belt(function(owner, obj)
+			local sec = obj:section()
+			local cond = obj:condition()
+			local immunities_sec = SYS_GetParam(0, sec, "hit_absorbation_sect", sec)
+			local prot = SYS_GetParam(2, immunities_sec, hit_type_to_artefact[hit_type_rad], 0) * cond
+
+			hit_additional = hit_additional + prot * artefact_k
+		end)
+	end
+
+	-- Booster protection
+	if hit_type_to_booster[hit_type_rad] then
+		actor:cast_Actor():conditions():BoosterForEach(function(booster_type, booster_time, booster_value)
+			if booster_type == hit_type_to_booster[hit_type_rad] then
+				hit_additional = hit_additional + booster_value * booster_k
+			end
+		end)
+	end
+
+	-- Final modifier
+	local hit_modifier = hit_additional >= 0 and 1 + hit_additional or 1 / (1 - hit_additional)
+	return hit_modifier
+end
+
+function hit_actor(hit_power, hit_type)
+	local hit_type = type(hit_type) == "number" and hit_type or hit[hit_type]
+	local damage = hit_power / get_actor_protection(hit_type)
+	local actor = db.actor
+
+	if (get_console_cmd(1,"g_god")) then
+		return damage
+	end
+
+	if hit_type == hit.telepatic then
+		arszi_psy.set_psy_health(arszi_psy.get_psy_health() - damage)
+	elseif hit_type == hit.radiation then
+		actor:change_radiation(damage)
+	else
+		actor:change_health(-damage)
+	end
+	
+	if not hit_type_to_artefact[hit_type] then
+		return damage
+	end
+
+	-- Protections
+	local slots = {
+		7, -- outfit
+		12, -- helm
+	}
+	for slot = 1, #slots do
+		local outfit = actor:item_in_slot(slots[slot])
+		if outfit then
+			local sec = outfit:section()
+			local immunities_sec = SYS_GetParam(0, sec, "immunities_sect", sec)
+			local prot = SYS_GetParam(2, immunities_sec, hit_type_to_artefact[hit_type], 0)
+			local upgrades = utils_item.get_upgrades_installed(outfit)
+			for i = 1, #upgrades do
+				local bonus_prot = tonumber(SYS_GetParam(0, upgrades[i], hit_type_to_artefact[hit_type], 0))
+				prot = prot + bonus_prot
+			end
+			
+			outfit:set_condition(outfit:condition() - hit_power * prot)
+		end
+	end
+	return damage
+end
+
+function can_panic(npc)
+	return npc 
+	and IsStalker(npc)
+	and npc:id() ~= AC_ID
+	and npc.alive and npc:alive()
+	and not (
+		character_community(npc) == "monolith" 
+		or character_community(npc) == "zombied"
+		or character_community(npc) == "greh"
+		or npc:section() == "actor_visual_stalker"
+	)
+end
+
+-- Store actor sound so it wont be overlapped/duplicated
+local actor_sound
+
+class "SoundObject"
+
+function SoundObject:__init(args)
+	if not (args and args.sound and sound_object(args.sound)) then
+		print_tip("cant get sound_object by path %s", args and args.sound)
+	end
+	self.attached_object_id = args.attached_object_id
+	self.attached_object_id_keep_alive = args.attached_object_id_keep_alive
+	self.position = self.attached_object_id and level.object_by_id(self.attached_object_id) and level.object_by_id(self.attached_object_id):position() or args.position
+	self.looped = args.looped
+	self.sound = args.sound
+	self.sound_object = sound_object(self.sound)
+	self.sound_played = false
+	self.sound_force_destroy = args.sound_force_destroy
+
+	-- Flag that it is actor sound, the previous sound that actor plays will be force stopped
+	self.actor_sound = args.actor_sound
+
+	-- Save args
+	self.args = dup_table(args)
+
+	self.destroy = function()
+		if self.sound_object then
+			if self.sound_force_destroy then
+				self.sound_object:stop()
+				if self.actor_sound and self.attached_object_id and self.attached_object_id == AC_ID then
+					actor_sound = nil
+				end
+			else
+				local vol = self.sound_object.volume or 1
+				local vol_tg = time_global()
+				local vol_period = 30
+				AddUniqueCall(throttle(function()
+					if time_global() - vol_tg < vol_period then return end
+					vol_tg = time_global()
+					vol = vol - 0.01
+					if vol <= 0 then
+						self.sound_object:stop()
+						if self.actor_sound and self.attached_object_id and self.attached_object_id == AC_ID then
+							actor_sound = nil
+						end
+						return true
+					end
+					self.sound_object.volume = vol
+				end))
+			end
+		end
+		RemoveUniqueCall(self.update)
+	end
+
+	self.update = function()
+		if not self.sound_object then
+			return true
+		end
+
+		if self.attached_object_id then
+			local obj = level.object_by_id(self.attached_object_id)
+			if obj and not (obj:alive() or self.attached_object_id_keep_alive) then
+				self.destroy()
+				return true
+			end
+		end
+
+		if self.sound_played then
+			if not self.attached_object_id then
+				if self.position then
+					self.sound_object:set_position(self.position)
+				end
+			elseif self.attached_object_id ~= AC_ID then
+				local obj = level.object_by_id(self.attached_object_id)
+				if obj and obj:position() then
+					self.sound_object:set_position(obj:position()) 
+				elseif self.position then
+					self.sound_object:set_position(self.position)
+				end
+			end
+			return
+		end
+
+		if not self.attached_object_id and not self.position then
+			self.attached_object_id = AC_ID
+		end
+
+		if self.attached_object_id == AC_ID then
+			self.sound_object:play(db.actor, 0, self.looped and sound_object.s2d + sound_object.looped or sound_object.s2d)
+
+			if self.actor_sound then
+				if actor_sound then
+					actor_sound:stop()
+				end
+				actor_sound = self.sound_object
+			end
+		else
+			local obj = level.object_by_id(self.attached_object_id)
+			self.sound_object:play_at_pos(obj, obj and obj:position() or self.position, 0, self.sound_looped and sound_object.s3d + sound_object.looped or sound_object.s3d)
+		end
+		self.sound_played = true
+	end
+
+	self.update = throttle(self.update)
+	AddUniqueCall(self.update)
+end
+
+function SoundObject:__finalize()
+
+end
+
+class "ParticleObject"
+
+function ParticleObject:__init(args)
+	if not (args and args.particle and particles_object(args.particle)) then
+		print_tip("cant get particle_object by path %s", args and args.particle)
+		return
+	end
+	self.lifetime = (args.lifetime or 0) * 1000
+	self.attached_object_id = args.attached_object_id
+	self.attached_object_bone = args.attached_object_bone
+	self.position = self.attached_object_id and level.object_by_id(self.attached_object_id) and level.object_by_id(self.attached_object_id):position() or args.position
+	local o = args.position_offset or {}
+	self.position_offset = vector():set(
+		o.x or o[1] or 0,
+		o.y or o[2] or 0,
+		o.z or o[3] or 0
+	)
+	self.particle = particles_object(args.particle)
+	if args.sound then
+		self.sound = args.sound
+		self.sound_object = sound_object(self.sound)
+		self.sound_played = false
+	end
+
+	if args.sound_looped ~= nil then
+		self.sound_looped = args.sound_looped
+	else
+		self.sound_looped = true
+	end
+
+	if args.sound_destroy ~= nil then
+		self.sound_destroy = args.sound_destroy
+	else
+		self.sound_destroy = true
+	end
+
+	if args.force_destroy ~= nil then
+		self.force_destroy = args.force_destroy
+	else
+		self.force_destroy = false
+	end
+
+	self.debug = args.debug
+
+	-- Save args
+	self.args = dup_table(args)
+
+	self.time = 0
+	self.reset_time = function()
+		self.time = 0
+	end
+	self.reset = function()
+		self.reset_time()
+		self.sound_played = false
+		AddUniqueCall(self.update)
+	end
+
+	self.is_active = function()
+		return self.time <= self.lifetime
+	end
+
+	if self.sound_object and self.sound_destroy then
+		self.destroy_particle_sound = function()
+			if not self.particle:playing() then
+				self.sound_object:stop()
+				return true
+			end
+		end
+	else
+		self.destroy_particle_sound = function()
+			return true
+		end
+	end
+	self.destroy_particle_sound = throttle(self.destroy_particle_sound)
+	
+	self.destroy = function()
+		RemoveUniqueCall(self.update)
+		if self.force_destroy then
+			self.particle:stop()
+			self.sound_object:stop()
+		else
+			self.particle:stop_deffered()
+			AddUniqueCall(self.destroy_particle_sound)
+		end
+	end
+
+	self.update = function()
+		if self.time > self.lifetime then
+			self.destroy()
+			return
+		end
+		self.time = self.time + device().time_delta
+
+		local o = self.attached_object_id and level.object_by_id(self.attached_object_id)
+		local pos = (o and utils_obj.safe_bone_pos(o, self.attached_object_bone or "bip01_spine")) or (o and o:position()) or vector():set(self.position)
+		pos = pos:add(self.position_offset)
+
+		if not self.particle:playing() then
+			self.particle:play_at_pos(pos)
+		end
+		self.particle:move_to(pos, VEC_ZERO)
+
+		if self.sound_object then
+			if not self.sound_played then
+				if self.attached_object_id then
+					if self.attached_object_id == AC_ID then
+						self.sound_object:play(db.actor, 0, self.sound_looped and sound_object.s2d + sound_object.looped or sound_object.s2d)
+					else
+						self.sound_object:play_at_pos(o, pos, 0, self.sound_looped and sound_object.s3d + sound_object.looped or sound_object.s3d)
+					end
+				else
+					self.sound_object:play_at_pos(nil, self.position, 0, self.sound_looped and sound_object.s3d + sound_object.looped or sound_object.s3d)
+				end
+				self.sound_played = true
+			else
+				if self.attached_object_id and self.attached_object_id ~= AC_ID then
+					self.sound_object:set_position(pos)
+				end
+			end
+		end
+		if self.debug then
+			print_tip("particle played, time %s, lifetime %s, obj_id %s", self.time, self.lifetime, self.attached_object_id)
+		end
+	end
+	self.update = throttle(self.update)
+	AddUniqueCall(self.update)
+end
+
+function ParticleObject:__finalize()
+
+end
+
+class "DOT"
+
+function DOT:__init(args)
+	if not (args and args.attached_object_id and level.object_by_id(args.attached_object_id)) then
+		print_tip("no attached_object available by id %s for DOT", args and args.attached_object_id)
+		return
+	end
+	self.damage = args.damage or 0
+	if args.hit_type then
+		self.hit_type = type(args.hit_type) == "number" and args.hit_type or hit[args.hit_type] or hit.burn
+	else
+		self.hit_type = hit.burn
+	end
+	self.damage_period = args.damage_period or 200
+	self.vanilla_actor_damage = args.vanilla_actor_damage
+	self.can_panic_npc = args.can_panic_npc
+
+	self.draftsman_id = args.draftsman_id
+
+	self.damage_tg = 0
+	self.damage_tg_time = 0
+	self.debug = args.debug
+
+	self.hit = hit()
+	self.hit.type = self.hit_type
+	self.hit.draftsman = self.draftsman_id and level.object_by_id(self.draftsman_id)
+	self.hit.power = self.damage
+	self.hit.impulse = 0
+	self.hit.direction = VEC_Z
+
+	self.lifetime = (args.lifetime or 0) * 1000
+	self.attached_object_id = args.attached_object_id
+	if args.particle_object then
+		if type(args.particle_object) ~= "table" then
+			args.particle_object = {args.particle_object}
+		end
+		self.particle_object = {}
+		for k, v in pairs(args.particle_object) do
+			self.particle_object[k] = v
+			self.particle_object[k].attached_object_id = self.attached_object_id
+		end
+	end
+
+	if args.hit_sound_object then
+		self.hit_sound_object = args.hit_sound_object
+		self.hit_sound_object.attached_object_id = self.attached_object_id
+	end
+
+	-- Save args
+	self.args = dup_table(args)
+
+	self.tg = 0
+	self.tg_time = 0
+
+	self.reset_time = function()
+		self.tg = 0
+		self.tg_update = 0
+		if self.particle_object then
+			for k, v in pairs(self.particle_object) do
+				v.reset_time()
+			end
+		end
+	end
+
+	self.destroy = function()
+		RemoveUniqueCall(self.update)
+		if self.particle_object then
+			for k, v in pairs(self.particle_object) do
+				v.destroy()
+			end
+		end
+		if self.hit_sound_object then
+			self.hit_sound_object.destroy()
+		end
+		local id = self.attached_object_id
+		demonized_stalker_aoe_panic.npc_remove_aoe_panic(id, self)
+	end
+
+	self.update = function()
+		if self.tg > self.lifetime then
+			self.destroy()
+			return
+		end
+		self.tg = self.tg + device().time_delta
+
+		-- Throttle updates
+		self.damage_tg = self.damage_tg + device().time_delta
+        if self.damage_tg < self.damage_tg_time then
+            return
+        end
+        self.damage_tg_time = self.damage_tg + self.damage_period
+
+        local obj = level.object_by_id(self.attached_object_id)
+        if obj then
+        	if self.vanilla_actor_damage or self.attached_object_id ~= AC_ID or self.hit.type == hit.fire_wound then
+	        	obj:hit(self.hit)
+	        	refresh_health(obj, self.hit.draftsman)
+	        	if self.debug then
+	        		print_tip("DOT hit, name %s, damage %s, tg %s, lifetime %s", obj:name(), self.damage, self.tg, self.lifetime)
+	        	end
+	        else
+	        	local actor_hit_power = hit_actor(self.damage, self.hit_type)
+	        	if self.debug then
+	        		print_tip("DOT custom hit, name %s, damage %s, tg %s, lifetime %s", obj:name(), actor_hit_power, self.tg, self.lifetime)
+	        	end
+	        end
+	        local id = self.attached_object_id
+			if self.can_panic_npc and can_panic(obj) then
+				demonized_stalker_aoe_panic.npc_add_aoe_panic(id, self)
+			end
+        end
+	end
+	self.update = throttle(self.update)
+	AddUniqueCall(self.update)
+end
+
+function DOT:__finalize()
+
+end
+
+class "AOE"
+
+function AOE:__init(args)
+	if not (args and args.position) then
+		print_tip("no position is provided for AOE, abort")
+		return
+	end
+	
+	-- AOE section that caused the AOE, used by molotov binder
+	self.section = args.section
+
+	-- AOE Radius
+	self.radius = args.radius or 10
+	self.radius_sqr = self.radius * self.radius
+
+	-- AOE Explosion damage
+	self.explosion_damage = args.explosion_damage or 0
+
+	-- AOE Explosion radius
+	self.explosion_radius = args.explosion_radius or self.radius
+	self.explosion_radius_sqr = self.explosion_radius * self.explosion_radius
+
+	--[[ AOE Explosion damage drop from center, possible values:
+		0. Constant, damage is equal in whole area
+		1. Linear, damage drops linearly from the center
+		2. Quadratic, damage drops quadraticaly from the center
+	]]
+	self.explosion_damage_drop = args.explosion_damage_drop or 1
+
+	-- AOE Explosion damage type
+	self.explosion_damage_type = args.explosion_damage_type or self.hit_type
+
+	-- AOE sound of explosion
+	self.explosion_sound = args.explosion_sound and sound_object(args.explosion_sound)
+
+	-- AOE Volumetric explosion
+	-- if object is behind static wall or cover - dont hurt
+	if args.explosion_volumetric ~= nil then
+		self.explosion_volumetric = args.explosion_volumetric
+	else
+		self.explosion_volumetric = true
+	end
+	
+	-- AOE Damage
+	self.damage = args.damage or 0
+
+	-- AOE hit type
+	if args.hit_type then
+		self.hit_type = type(args.hit_type) == "number" and args.hit_type or hit[args.hit_type] or hit.burn
+	else
+		self.hit_type = hit.burn
+	end
+
+	-- AOE Volumetric
+	-- if object is behind static wall or cover - dont hurt
+	if args.volumetric ~= nil then
+		self.volumetric = args.volumetric
+	else
+		self.volumetric = true
+	end
+	
+	--[[ AOE Damage drop from center, possible values:
+		0. Constant, damage is equal in whole area
+		1. Linear, damage drops linearly from the center
+		2. Quadratic, damage drops quadraticaly from the center
+	]]
+	self.damage_drop = args.damage_drop or 0
+
+	-- AOE ignore objects by ids, wont be damaged
+	-- Example: {[0] = true} to ignore actor
+	self.ignore_object_ids = args.ignore_object_ids or {}
+
+	-- AOE position
+	self.position = vector():set(
+		args.position.x or args.position[1],
+		args.position.y or args.position[2],
+		args.position.z or args.position[3]
+	)
+
+	-- AOE rate of applying damage
+	self.damage_period = args.damage_period or 200
+
+	-- AOE draftsman id, who deals damage
+	self.draftsman_id = args.draftsman_id
+
+	-- AOE lifetime
+	self.lifetime = (args.lifetime or 0) * 1000
+
+	--[[ AOE damage drop with lifetime, possible values
+		0. Constant, damage is equal throughout whole lifetime
+		1. Linear, damage drops linearly throughout whole lifetime
+		2. Quadratic, damage drops quadraticaly throughout whole lifetime
+	]]
+	self.lifetime_damage_drop = args.lifetime_damage_drop or 0
+
+	-- Time of DOT when got hit into radius, works only when damage_drop is 0
+	self.dot_damage_time = args.dot_damage_time or 0
+
+	-- AOE restore vanilla damage calculation for actor, be aware that with types like "burn" it will be very hard to balance damage actor vs npcs
+	self.aoe_vanilla_actor_damage = args.aoe_vanilla_actor_damage
+
+	-- AOE sound of AOE effect
+	self.aoe_sound = args.aoe_sound
+
+	-- AOE sound of hit by AOE
+	self.aoe_hit_sound = args.aoe_hit_sound
+
+	-- AOE sound of actor screaming
+	self.aoe_damage_actor_sound = args.aoe_damage_actor_sound
+
+	-- AOE can panic npc or not
+	-- If true then npc will halt combat and panic during AOE duration 
+	self.can_panic_npc = args.can_panic_npc
+	self.panicked_npcs = {}
+
+	-- AOE custom particles playing at objects positions, can be array of paths to particles or string with path
+	self.particles = {}
+	if type(args.particles) ~= "table" then
+		args.particles = {args.particles}
+	end
+	for i, v in ipairs(args.particles) do
+		local p = particles_object(v)
+		if p then
+			self.particles[#self.particles + 1] = v
+		end
+	end
+	if is_empty(self.particles) then
+		self.particles[#self.particles + 1] = hit_type_to_particles[self.hit_type].particle
+	end
+
+	--- AOE particles offset, must be a table or vector object
+	args.particles_offset = args.particles_offset and {
+		args.particles_offset.x or args.particles_offset[1],
+		args.particles_offset.y or args.particles_offset[2],
+		args.particles_offset.z or args.particles_offset[3],
+	}
+	local o
+	if is_not_empty(args.particles) then
+		o = args.particles_offset or {}
+	else
+		o = args.particles_offset or hit_type_to_particles[self.hit_type].offset or {}
+	end
+	self.particles_offset = vector():set(
+		o.x or o[1] or 0,
+		o.y or o[2] or 0,
+		o.z or o[3] or 0
+	)
+
+	-- AOE particles at the center of explosion, can be array of paths to particles or string with path
+	self.explosion_particles = {}
+	if type(args.explosion_particles) ~= "table" then
+		args.explosion_particles = {args.explosion_particles}
+	end
+	for i, v in ipairs(args.explosion_particles) do
+		local p = particles_object(v)
+		if p then
+			self.explosion_particles[#self.explosion_particles + 1] = v
+		end
+	end
+	if is_empty(self.explosion_particles) then
+		self.explosion_particles[#self.explosion_particles + 1] = hit_type_to_explosion_particles[self.hit_type].particle
+	end
+
+	--- AOE particles at the center of explosion offset, must be a table or vector object
+	args.explosion_particles_offset = args.explosion_particles_offset and {
+		args.explosion_particles_offset.x or args.explosion_particles_offset[1],
+		args.explosion_particles_offset.y or args.explosion_particles_offset[2],
+		args.explosion_particles_offset.z or args.explosion_particles_offset[3],
+	}
+	local o
+	if is_not_empty(args.explosion_particles) then
+		o = args.explosion_particles_offset or {}
+	else
+		o = args.explosion_particles_offset or hit_type_to_explosion_particles[self.hit_type].offset or {}
+	end
+	self.explosion_particles_offset = vector():set(
+		o.x or o[1] or 0,
+		o.y or o[2] or 0,
+		o.z or o[3] or 0
+	)
+
+	self.particles_object_table = {}
+	self.DOT_table = {}
+
+	-- AOE debug mode, prints messages
+	self.debug = args.debug
+
+	-- Save args
+	self.args = dup_table(args)
+	
+	self.tg = 0
+	self.tg_time = 0
+	self.spawn_time = 0
+	self.death_time = self.lifetime
+	self.hit = hit()
+	self.hit.type = self.hit_type
+	self.hit.draftsman = self.draftsman_id and level.object_by_id(self.draftsman_id)
+	self.hit.power = self.damage
+	self.hit.impulse = 0
+	self.hit.direction = VEC_Z
+
+	self.volumetric_check = function(obj, dist_sqrt)
+		local ray_pos = vector():set(self.position):add(vector():set(0, 0.4, 0))
+		local ray_dir = vector():set(utils_obj.safe_bone_pos(obj, "bip01_spine") or obj:position():add(vector():set(0, 0.4, 0))):sub(ray_pos):normalize()
+		local ray = demonized_geometry_ray.geometry_ray({
+			ray_range = dist_sqrt,
+			-- visualize = true,
+		})
+		local res = ray:get(ray_pos, ray_dir)
+		if not demonized_geometry_ray.similar(res.distance, dist_sqrt, 0.01) then
+			if self.debug then
+				print_tip("obj %s hidden from explosion, dist %s, ray_dist %s", obj:name(), dist_sqrt, res.distance)
+			end
+			return false
+		else
+			if self.debug then
+				print_tip("obj %s in explosion contact, dist %s, ray_dist %s", obj:name(), dist_sqrt, res.distance)
+			end
+			return true
+		end
+	end
+
+	-- AOE damage function, provide own with self and obj as arguments or use default
+	if args.aoe_damage_function then
+		self.aoe_damage_function = function(obj)
+			args.aoe_damage_function(self, obj)
+		end
+	else
+		self.aoe_damage_function = function(obj)
+			if IsStalker(obj) or IsMonster(obj) or obj:id() == AC_ID then
+				local pos = obj:position()
+				local dist = pos:distance_to_sqr(self.position)
+				if dist > self.radius_sqr then return end
+
+				if self.volumetric then
+					if not self.volumetric_check(obj, math.sqrt(dist)) then return end
+				end
+
+				local id = obj:id()
+				self.hit.power = self.damage
+
+				if self.damage_drop == 1 then
+					self.hit.power = self.hit.power * (1 - dist / self.radius_sqr)
+				elseif self.damage_drop == 2 then
+					self.hit.power = self.hit.power * (1 - dist / self.radius_sqr) ^ 2
+				end
+
+				if self.lifetime_damage_drop == 1 then
+					self.hit.power = self.hit.power * math.max(0, 1 - normalize(self.tg, self.spawn_time, self.death_time))
+				elseif self.lifetime_damage_drop == 2 then
+					self.hit.power = self.hit.power * math.max(0, 1 - normalize(self.tg, self.spawn_time, self.death_time)) ^ 2
+				end
+
+				if self.damage_drop ~= 0 then
+					if self.aoe_vanilla_actor_damage or id ~= AC_ID or self.hit.type == hit.fire_wound then
+			        	SendScriptCallback("on_aoe_before_hit", self, obj)
+			        	obj:hit(self.hit)
+			        	refresh_health(obj, self.hit.draftsman)
+			        	SendScriptCallback("on_aoe_hit", self, obj, self.hit.power)
+			        	if self.debug then
+							print_tip("AOE hit, obj %s, dist %s, damage %s, time %s, lifetime %s", obj:name(), dist, self.hit.power, self.tg - self.spawn_time, self.lifetime)
+						end
+			        else
+			        	SendScriptCallback("on_aoe_before_hit", self, db.actor)
+			        	local actor_hit_power = hit_actor(self.hit.power, self.hit.type)
+			        	SendScriptCallback("on_aoe_hit", self, db.actor, actor_hit_power)
+			        	if self.debug then
+							print_tip("AOE hit, obj %s, dist %s, damage %s, time %s, lifetime %s", obj:name(), dist, actor_hit_power, self.tg - self.spawn_time, self.lifetime)
+						end
+			        end
+					if self.particles then
+						if self.particles_object_table[id] then
+							for i, v in ipairs(self.particles_object_table[id]) do
+								if v.is_active() then
+									v.reset_time()
+								else
+									v.reset()
+								end
+							end
+						else
+							self.particles_object_table[id] = {}
+							for i, v in ipairs(self.particles) do
+								table.insert(self.particles_object_table[id], ParticleObject({
+									particle = v,
+									position_offset = self.particles_offset,
+									position = utils_obj.safe_bone_pos(obj, "bip01_spine") or pos,
+									attached_object_id = id,
+									lifetime = 0,
+									sound = self.aoe_hit_sound,
+									-- debug = self.debug,
+								}))
+							end
+						end
+					end
+					if IsStalker(obj) and can_panic(obj) then
+						demonized_stalker_aoe_panic.npc_add_aoe_panic(id, self)
+						self.panicked_npcs[id] = true
+					end
+				else
+					if self.DOT_table[id] then
+						self.DOT_table[id].reset_time()
+					else
+						self.DOT_table[id] = DOT({
+							damage = self.damage,
+							hit_type = self.hit_type,
+							damage_period = self.damage_period,
+							lifetime = self.dot_damage_time,
+							draftsman_id = self.draftsman_id,
+							attached_object_id = id,
+							vanilla_actor_damage = self.aoe_vanilla_actor_damage,
+							debug = self.debug,
+							can_panic_npc = self.can_panic_npc and can_panic(obj),
+							particle_object = (function()
+								local t = {}
+								for i, v in ipairs(self.particles) do
+									table.insert(t, ParticleObject({
+										particle = v,
+										position_offset = self.particles_offset,
+										position = utils_obj.safe_bone_pos(obj, "bip01_spine") or pos,
+										attached_object_id = id,
+										lifetime = self.dot_damage_time,
+										sound = self.aoe_hit_sound,
+										-- debug = self.debug,
+									}))
+								end
+								return t
+							end)(),
+							hit_sound_object = id == AC_ID and SoundObject({
+								attached_object_id = id,
+								attached_object_id_keep_alive = false,
+								position = pos,
+								looped = true,
+								sound = self.aoe_damage_actor_sound,
+								actor_sound = true,
+							}),
+						})
+					end
+				end
+			end
+		end
+	end
+
+	self.first_update = true
+	self.spawn_particles = function()
+		if self.explosion_particles then
+			for i, v in ipairs(self.explosion_particles) do
+				ParticleObject({
+					particle = v,
+					position_offset = self.explosion_particles_offset,
+					position = self.position,
+					lifetime = 0,
+					-- sound = self.aoe_sound,
+					sound_destroy = false,
+					sound_looped = false,
+					debug = self.debug,
+				})
+			end
+		end
+	end
+
+	self.explosion_func = function(obj)
+		if self.ignore_object_ids[obj:id()] then return end
+		if not (IsStalker(obj) or IsMonster(obj) or obj:id() == AC_ID) then return end
+		
+		local pos = obj:position()
+		local dist = pos:distance_to_sqr(self.position)
+		if dist > self.explosion_radius_sqr then return end
+
+		if self.explosion_volumetric then
+			if not self.volumetric_check(obj, math.sqrt(dist)) then return end
+		end
+
+		self.hit.power = self.explosion_damage
+		self.hit.type = self.explosion_damage_type
+
+		if self.explosion_damage_drop == 1 then
+			self.hit.power = self.hit.power * (1 - dist / self.explosion_radius_sqr)
+		elseif self.explosion_damage_drop == 2 then
+			self.hit.power = self.hit.power * (1 - dist / self.explosion_radius_sqr) ^ 2
+		end
+
+		obj:hit(self.hit)
+		refresh_health(obj, self.hit.draftsman)
+		if self.debug then
+			print_tip("AOE main hit, obj %s, dist %s, damage %s", obj:name(), dist, self.hit.power)
+		end
+
+		self.hit.power = self.damage
+		self.hit.type = self.hit_type
+	end 
+
+	self.explode = function()
+		if self.explosion_damage ~= 0 then 
+			level.iterate_nearest(self.position, self.explosion_radius, self.explosion_func)
+		end
+
+		if self.explosion_sound then
+			self.explosion_sound:play_at_pos(nil, self.position, 0, sound_object.s3d)
+		end
+
+		self.spawn_particles()
+	end
+
+	self.remove_npc_panic = function(id, force)
+		local obj = level.object_by_id(id)
+		if force or not (obj and obj.alive and obj:alive() and obj:position():distance_to_sqr(self.position) <= self.radius_sqr) then
+			demonized_stalker_aoe_panic.npc_remove_aoe_panic(id, self)
+		end
+	end
+
+	self.remove_all_npc_panic = function()
+		for id, _ in pairs(self.panicked_npcs) do
+			self.remove_npc_panic(id, true)
+		end
+	end
+
+	self.destroy = function()
+		SendScriptCallback("on_aoe_before_destroy", self)
+		RemoveUniqueCall(self.update)
+		self.remove_all_npc_panic()
+		SendScriptCallback("on_aoe_destroy", self)
+	end
+
+	self.update = function()
+		if self.tg > self.death_time then
+			self.destroy()
+			return
+		end
+
+		SendScriptCallback("on_aoe_update", self)
+
+		self.tg = self.tg + device().time_delta
+		if self.tg < self.tg_time then
+			return
+		end
+
+		if self.first_update then
+			SendScriptCallback("on_aoe_before_explode", self)
+			self.explode()
+			self.first_update = false
+			SendScriptCallback("on_aoe_explode", self)
+		end
+
+		level.iterate_nearest(self.position, self.radius, self.aoe_damage_function)
+		for id, _ in pairs(self.panicked_npcs) do
+			self.remove_npc_panic(id)
+		end
+
+		self.tg_time = self.tg + self.damage_period
+	end
+
+	SendScriptCallback("on_aoe_init", self)
+	self.update = throttle(self.update)
+	AddUniqueCall(self.update)
+end
+
+function AOE:__finalize()
+
+end
+
+function test_AOE()
+	AOE({
+		position = device().cam_pos:mad(device().cam_dir, level.get_target_dist()),
+		explosion_sound = "anomaly\\fireball_blow",
+        aoe_sound = "anomaly\\fireball_idle",
+        aoe_hit_sound = "anomaly\\fire2",
+		debug = true,
+	})
+end
+
+local projectile_storage = {}
+
+-- Projectile class
+-- Moving particle with collision detection, homing capabilities and can do damage
+class "Projectile"
+function Projectile:__init(args)
+	if not (args and args.position and args.particles and particles_object(type(args.particles) == "table" and args.particles[1] or args.particles)) then
+		print_tip("no position %s or particle %s provided for Projectile object, abort", args and args.position, args and args.particles)
+		return
+	end
+
+	-- Particles, can be a string or a table
+	if type(args.particles) ~= "table" then
+		args.particles = {args.particles}
+	end
+
+	self.particles = {}
+	for i, v in ipairs(args.particles) do
+		local p = particles_object(v)
+		if p then
+			self.particles[#self.particles + 1] = p
+		end
+	end
+
+	-- Particles on destroy, can be a string or a table
+	if type(args.particles_destroy) ~= "table" then
+		args.particles_destroy = {args.particles_destroy}
+	end
+
+	self.particles_destroy = {}
+	for i, v in ipairs(args.particles_destroy) do
+		local p = particles_object(v)
+		if p then
+			self.particles_destroy[#self.particles_destroy + 1] = p
+		end
+	end
+
+	-- Section of thing that spawned particle
+	self.section = args.section
+
+	-- ID of thing that spawned particle
+	self.weapon_id = args.weapon_id
+
+	-- Draftsman ID, who fired the projectile
+	self.draftsman_id = args.draftsman_id
+
+	-- Spawn position
+	self.position = args.position
+
+	-- Spawn direction
+	self.direction = args.direction:normalize() or vector():set(VEC_Z):normalize()
+
+	-- Spawn velocity
+	-- Each second the projectile will move by this velocity
+	self.velocity = (args.velocity or 0) * 0.1
+
+	-- Traveled distance
+	-- After <distance_max> meters projectile will be self-destroyed
+	self.distance = 0
+	self.distance_max = 600
+
+	-- Damage
+	self.damage = args.damage or 0
+
+	-- Impulse
+	self.impulse = args.impulse or 0
+
+	--[[ Damage drop from center, possible values:
+		0. Constant, damage is equal in whole area
+		1. Linear, damage drops linearly from the center
+		2. Quadratic, damage drops quadraticaly from the center
+	]]
+	self.damage_drop = args.damage_drop or 1
+
+	-- Hit type
+	self.hit_type = args.hit_type and hit[args.hit_type] or hit.burn
+
+	-- Radius for collision
+	self.radius = math.max(0, args.radius or 0)
+	self.radius_sqr = self.radius * self.radius
+
+	-- Radius for damage
+	-- Set to 0 for direct hit damage only
+	self.damage_radius = math.max(0, args.damage_radius or 0)
+	self.damage_radius_sqr = self.damage_radius * self.damage_radius
+
+	-- Sound on destroy
+	if not args.sound_destroy then
+		args.sound_destroy = ""
+	end
+	if string.len(args.sound_destroy) > 0 and sound_object(args.sound_destroy) then
+		self.sound_destroy = sound_object(args.sound_destroy)
+	end
+
+	-- Sound on flying
+	if not args.sound_idle then
+		args.sound_idle = ""
+	end
+	if string.len(args.sound_idle) > 0 and sound_object(args.sound_idle) then
+		self.sound_idle = SoundObject({
+			position = self.position,
+			looped = true,
+			args = args.sound_idle,
+			sound_force_destroy = true,
+		})
+	end
+
+	-- Homing projectile
+	self.homing = args.homing
+
+	-- Homing mode
+	--[[
+		0: All but draftsman and objects
+		1: Enemies only
+		2: Enemies + crows
+	--]]
+	
+	self.homing_mode = args.homing_mode or 1
+	if self.homing_mode < 0 or self.homing_mode > 2 then
+		self.homing_mode = 1
+	end
+
+	-- Homing speed in degrees
+	-- Each second the projectile will turn to closest target by this amount
+	self.homing_speed = (args.homing_speed or 0) * 0.1
+
+	-- Radius to trigger homing
+	self.homing_radius = args.homing_radius or 0
+	self.homing_radius_sqr = self.homing_radius * self.homing_radius
+
+	-- Bouncing projectile
+	-- Will bounce from walls at reflected angle of self.direction
+	self.bouncing = args.bouncing
+
+	-- Bouncing amount
+	-- After that amount, next collision will be final one
+	self.bouncing_amount = args.bouncing_amount or 1
+
+	-- Bouncing sound
+	if not args.sound_bounce then
+		args.sound_bounce = ""
+	end
+	if string.len(args.sound_bounce) > 0 and sound_object(args.sound_bounce) then
+		self.sound_bounce = sound_object(args.sound_bounce)
+	end
+
+	-- Reflect after bounce function
+	-- Returns true after success
+	self.reflect = function()
+		local surface_normal = demonized_geometry_ray.get_surface_normal(self.position, self.direction)
+		if surface_normal then
+			local flags = {ret_value = true}
+			SendScriptCallback("on_projectile_before_bounce", self, surface_normal, flags)
+			if flags.ret_value then
+				self.direction:reflect(self.direction, surface_normal)
+				if self.sound_bounce then
+					self.sound_bounce:play_at_pos(nil, self.position, 0, sound_object.s3d)
+				end
+				SendScriptCallback("on_projectile_bounce", self, surface_normal)
+				return true
+			end
+		end
+	end
+
+	-- Current bounce
+	self.current_bounce = 0
+
+	-- Flag for force destory
+	self.force_destroy = false
+
+	-- Debug
+	self.debug = args.debug
+
+	-- Save args
+	self.args = dup_table(args)
+
+	-- Hit object
+	self.hit = hit()
+	self.hit.type = self.hit_type
+	self.hit.draftsman = self.draftsman_id and level.object_by_id(self.draftsman_id)
+	self.hit.power = self.damage
+	self.hit.impulse = self.impulse
+	self.hit.direction = self.direction
+
+	-- Collision ray
+	self.contact_range = 0.3
+	self.create_collision_ray = function()
+		return demonized_geometry_ray.geometry_ray({
+			ray_range = 1000,
+			contact_range = self.contact_range,
+			flags = 3,
+			ignore_object = self.draftsman_id and level.object_by_id(self.draftsman_id),
+		})
+	end
+	self.collision_ray = self.create_collision_ray()
+
+	-- Get name of projectile
+	self.get_name = function()
+		return (self.section or "nil_section") .. "_" .. (self.weapon_id or "nil_weap_id")
+	end
+	
+	-- Damage function
+	-- This table is for storing ids so object wouldnt be hit twice
+	self.already_hit_object_ids = {}
+	self.damage_func = function(obj)
+		-- If object is not hittable - skip it
+		if not obj.hit then return end
+		if self.already_hit_object_ids[obj:id()] then return end
+
+		-- If object is direct hit -- apply full damage
+		if self.direct_hit_object and obj:id() == self.direct_hit_object:id() then
+			self.hit.power = self.damage
+
+			SendScriptCallback("on_projectile_before_hit", self, obj, true)
+			obj:hit(self.hit)
+			refresh_health(obj, self.hit.draftsman)
+			SendScriptCallback("on_projectile_hit", self, obj, self.hit.power, true)
+			self.already_hit_object_ids[obj:id()] = true
+			if self.debug then
+				print_tip("hit obj %s, direct_hit, damage_radius_sqr %s", obj:name(), self.damage_radius_sqr)
+			end
+			return
+		end
+
+		-- If object out of radius - skip it
+		local pos = obj:position()
+		local dist = pos:distance_to_sqr(self.position)
+		if dist > self.damage_radius_sqr then return end
+
+		-- Hit the object
+		self.hit.power = self.damage
+		if self.damage_drop == 1 then
+			self.hit.power = self.hit.power * (1 - dist / self.damage_radius_sqr)
+		elseif self.damage_drop == 2 then
+			self.hit.power = self.hit.power * (1 - dist / self.damage_radius_sqr) ^ 2
+		end
+
+		SendScriptCallback("on_projectile_before_hit", self, obj, false)
+		obj:hit(self.hit)
+		refresh_health(obj, self.hit.draftsman)
+		SendScriptCallback("on_projectile_hit", self, obj, self.hit.power, false)
+		if self.debug then
+			print_tip("hit obj %s, dist %s, damage_radius_sqr %s", obj:name(), dist, self.damage_radius_sqr)
+		end
+		self.already_hit_object_ids[obj:id()] = true
+	end
+
+	-- Homing check if valid for homing
+	self.homing_check = function(obj)
+		if self.homing_mode == 0 then
+			if not (
+				obj:id() ~= self.draftsman_id
+				and (IsStalker(obj) or IsMonster(obj))
+				and obj.alive and obj:alive()
+			)
+			then
+				return false
+			end
+		elseif self.homing_mode == 1 then
+			if not (
+				obj:id() ~= self.draftsman_id
+				and (IsStalker(obj) or IsMonster(obj))
+				and obj.alive and obj:alive()
+				and xr_combat_ignore.is_enemy(obj, level.object_by_id(self.draftsman_id))
+			)
+			then
+				return false
+			end
+		elseif self.homing_mode == 2 then
+			if not bind_crow.crow_storage[obj:id()] or not (
+				obj:id() ~= self.draftsman_id
+				and (IsStalker(obj) or IsMonster(obj))
+				and obj.alive and obj:alive()
+				and xr_combat_ignore.is_enemy(obj, level.object_by_id(self.draftsman_id))
+			)
+			then
+				return false
+			end
+		end
+
+		return true
+	end
+
+	-- Homing function
+	self.homing_func = function(obj)
+		-- Check if valid for homing
+		-- You can override homing (enable or disable to object) by setting flags.ret_value to true or false on "on_projectile_before_homing" function
+		local flags = {ret_value = self.homing_check(obj)}
+		SendScriptCallback("on_projectile_before_homing", self, obj, flags)
+		if not flags.ret_value then return end
+
+		-- If object out of radius - skip it
+		local pos = obj:position()
+		local dist = pos:distance_to_sqr(self.position)
+		if dist > self.homing_radius_sqr then return end
+
+		-- Get target direction
+		local target_dir = pos:sub(self.position):normalize()
+
+		-- Get angle between target and current directions
+		local angle = yaw_degree3d(self.direction, target_dir)
+
+		-- Get interpolation based on homing speed
+		local time_delta = math.min(100, device().time_delta)
+		local delta = math.max(self.homing_update_period or 0, time_delta) * 0.01
+		local homing_speed = self.homing_speed * delta
+		local coeff = math.min(homing_speed / angle, 1)
+
+		-- print_tip("projectile %s%s, homing to obj %s, angle %s, hom speed %s, coeff %s", self.section, self.weapon_id, obj:name(), angle, homing_speed, coeff)
+
+		-- Interpolate between current dir and target dir
+		self.direction = vector():set(
+			lerp(self.direction.x, target_dir.x, coeff),
+			lerp(self.direction.y, target_dir.y, coeff),
+			lerp(self.direction.z, target_dir.z, coeff)
+		)
+		return true
+	end
+
+	self.homing_collision_func = function(obj)
+		-- Check if valid for homing
+		if not self.homing_check(obj) then return end
+
+		-- If object out of radius - skip it
+		local pos = obj:position()
+		local dist = pos:distance_to_sqr(self.position)
+		if dist > self.adjusted_contact_range_sqr then return end
+
+		-- Projectile near object - destroy on next update
+		self.force_destroy = true
+		return true
+	end
+
+	-- Update homing to targets if homing enabled
+	self.homing_update_period = 100
+	self.homing_update_time = 0
+	self.homing_update_func = function()
+		if not self.homing then
+			return
+		end
+
+		self.homing_update_time = self.homing_update_time + device().time_delta
+		if self.homing_update_time > self.homing_update_period then
+			level.iterate_nearest(self.position, self.homing_radius, self.homing_func)
+			self.homing_update_time = 0
+		end
+	end
+	if self.homing then
+		self.homing_update_func = throttle(self.homing_update_func)
+		AddUniqueCall(self.homing_update_func)
+	end
+
+	-- Update function
+	self.update = function()
+
+		-- Update sound
+		if self.sound_idle then
+			self.sound_idle.position = self.position
+		end
+
+		-- Update position
+		local delta = math.min(100, device().time_delta) * 0.01
+		local delta_distance = self.velocity * delta
+
+		-- if self.homing then
+		-- 	self.homing_update_period = 0
+		-- 	level.iterate_nearest(self.position, self.homing_radius, self.homing_func)
+		-- end
+
+		self.distance = self.distance + delta_distance
+		self.position:mad(self.direction, delta_distance)
+
+		-- Update particles position
+		for i, v in ipairs(self.particles) do
+			if v:playing() then
+				v:move_to(self.position, VEC_ZERO)
+			else
+				v:play_at_pos(self.position)
+			end
+		end
+		
+		-- Collision check if projectile is homing
+		self.adjusted_contact_range = math.max(self.contact_range, delta_distance)
+		self.adjusted_contact_range_sqr = self.adjusted_contact_range * self.adjusted_contact_range
+		if self.homing then
+			level.iterate_nearest(self.position, self.adjusted_contact_range, self.homing_collision_func)
+		end
+
+		SendScriptCallback("on_projectile_update", self)
+
+		if self.force_destroy or self.distance > self.distance_max then
+			self.destroy()
+			return true
+		end
+
+		-- Shoot collision ray
+		self.collision_ray = self.create_collision_ray()
+		self.collision_ray.contact_range = self.adjusted_contact_range
+		self.collision_res = self.collision_ray:get(self.position, self.direction)
+		if self.collision_res.in_contact and not_passable(self.collision_ray) then
+			self.direct_hit_object = self.collision_res.object
+			if self.bouncing and self.current_bounce < self.bouncing_amount and not self.collision_res.object then
+				-- Offset position a bit back to improve calculation of surface normal
+				self.position = self.collision_res.position:add(vector():set(self.direction):invert():mul(0.3))
+				if self.reflect() then
+					self.current_bounce = self.current_bounce + 1
+				else
+					self.position = self.collision_res.position
+					self.destroy()
+					return true
+				end
+			else
+				self.position = self.collision_res.position
+				self.destroy()
+				return true
+			end
+		end
+	end
+
+	-- Destroy function
+	self.destroyed = false
+	self.destroy = function()
+		SendScriptCallback("on_projectile_before_destroy", self)
+		if self.direct_hit_object then
+			self.damage_func(self.direct_hit_object)
+		end
+		level.iterate_nearest(self.position, self.damage_radius, self.damage_func)
+
+		for i, v in ipairs(self.particles) do
+			v:stop()
+		end
+
+		-- Offset position a bit back to improve particles_destroy position
+		if self.collision_res then
+			self.position = self.collision_res.position:add(vector():set(self.direction):invert():mul(0.3))
+		end
+
+		for i, v in ipairs(self.particles_destroy) do
+			v:play_at_pos(self.position)
+			v:stop_deffered()
+		end
+
+		if self.sound_idle then self.sound_idle.destroy() end
+		self.sound_destroy:play_at_pos(nil, self.position, 0, sound_object.s3d)
+
+		SendScriptCallback("on_projectile_destroy", self)
+
+		self.destroyed = true
+		self.direct_hit_object = nil
+		projectile_storage[self] = nil
+		RemoveUniqueCall(self.homing_update_func)
+		RemoveUniqueCall(self.update)
+	end
+
+	-- Get current state of projectile
+	self.get_state = function()
+		local state = {
+			particles = self.args.particles,
+ 			particles_destroy = self.args.particles_destroy,
+			section = self.section,
+			weapon_id = self.weapon_id,
+			draftsman_id = self.draftsman_id,
+			position = utils_data.vector_to_string(self.position),
+			direction = utils_data.vector_to_string(self.direction),
+			velocity = self.velocity * 10,
+			distance = self.distance,
+			distance_max = self.distance_max,
+			damage = self.damage,
+			impulse = self.impulse,
+			damage_drop = self.damage_drop,
+			hit_type = self.hit_type,
+			radius = self.radius,
+			radius_sqr = self.radius_sqr,
+			damage_radius = self.damage_radius,
+			damage_radius_sqr = self.damage_radius_sqr,
+			sound_destroy = self.args.sound_destroy,
+			sound_idle = self.args.sound_idle,
+			homing = self.homing,
+			homing_mode = self.homing_mode,
+			homing_speed = self.homing_speed * 10,
+			homing_radius = self.homing_radius,
+			homing_radius_sqr = self.homing_radius_sqr,
+			homing_update_period = self.homing_update_period,
+			homing_update_time = self.homing_update_time,
+			bouncing = self.bouncing,
+			bouncing_amount = self.bouncing_amount,
+			sound_bounce = self.args.sound_bounce,
+			current_bounce = self.current_bounce,
+			force_destroy = self.force_destroy,
+			debug = self.debug,
+			args = self.args,
+			destroyed = self.destroyed,
+		}
+		return state
+	end
+
+	SendScriptCallback("on_projectile_init", self)
+	if self.particles and not self.destroyed then
+		projectile_storage[self] = self
+	end
+	self.update = throttle(self.update)
+	AddUniqueCall(self.update)
+end
+
+function Projectile:__finalize()
+
+end
+
+function get_projectile_weapon_params(wpn)
+	local sec = wpn:section()
+	local projectile = SYS_GetParam(1, sec, "projectile")
+	if not projectile then return end
+
+	local projectile_particles = str_explode(SYS_GetParam(0, sec, "projectile_particles", ""), ",")
+	if string.len(projectile_particles[1]) == 0 then return end
+
+	return {
+		section = sec,
+		particles = projectile_particles,
+		particles_destroy = str_explode(SYS_GetParam(0, sec, "projectile_particles_destroy", ""), ","),
+		velocity = SYS_GetParam(2, sec, "projectile_velocity", 25),
+		damage = SYS_GetParam(2, sec, "projectile_damage", 0),
+		impulse = SYS_GetParam(2, sec, "projectile_impulse", 0),
+		damage_drop = SYS_GetParam(2, sec, "projectile_damage_drop", 1),
+		hit_type = SYS_GetParam(0, sec, "projectile_hit_type", "burn"),
+		radius = SYS_GetParam(2, sec, "projectile_radius", 0),
+		damage_radius = SYS_GetParam(2, sec, "projectile_damage_radius", 0),
+		homing = SYS_GetParam(1, sec, "projectile_homing"),
+		homing_mode = SYS_GetParam(2, sec, "projectile_homing_mode", 0),
+		homing_speed = SYS_GetParam(2, sec, "projectile_homing_speed", 0),
+		homing_radius = SYS_GetParam(2, sec, "projectile_homing_radius", 0),
+		bouncing = SYS_GetParam(1, sec, "projectile_bouncing"),
+		bouncing_amount = SYS_GetParam(2, sec, "projectile_bouncing_amount", 1),
+		sound_bounce = SYS_GetParam(0, sec, "projectile_sound_bounce", ""),
+		sound_destroy = SYS_GetParam(0, sec, "projectile_sound_destroy", ""),
+		sound_idle = SYS_GetParam(0, sec, "projectile_sound_idle", ""),
+	}
+end
+
+function try_fire_projectile_weapon(obj, wpn, pos, dir)
+	if not (pos and dir) then return end
+	local wpn_params = get_projectile_weapon_params(wpn)
+	if wpn_params then
+		table_merge(wpn_params, {
+			debug = true,
+			position = pos,
+			direction = dir,
+			weapon_id = wpn:id(),
+			draftsman_id = obj:id(),
+		})
+		return Projectile(wpn_params)
+	end
+end
+
+-- Callback for actor weapons that use projectiles
+function actor_on_weapon_fired(obj, wpn, ammo_elapsed, grenade_elapsed, ammo_type, grenade_type)
+	return try_fire_projectile_weapon(db.actor, wpn, device().cam_pos, device().cam_dir)
+end
+
+-- Projectiles for NPCs firing a weapon
+local NPC_TRACKING = {}
+check_npcs_weapons = throttle(function()
+	for k, v in pairs(NPC_TRACKING) do
+		local npc = level.object_by_id(k)
+		if not (npc and npc.alive and npc:alive()) then
+			NPC_TRACKING[k] = nil
+		else
+			local wpn = level.object_by_id(v.id)
+			if not wpn then
+				NPC_TRACKING[k] = nil
+			else
+				local state = wpn:get_state()
+				local c_obj = wpn:cast_Weapon()
+				local fire_rate = math.ceil(c_obj:RPM() * 1000)
+				local tg = time_global()
+				if state == 5 and (tg - (v.time_shot or 0)) > fire_rate then
+					local be = npc:best_enemy()
+					local shoot_pos = utils_obj.safe_bone_pos(wpn, "wpn_body")
+					local shoot_dir
+					if be then
+						shoot_dir = utils_obj.safe_bone_pos(be, "bip01_spine"):sub(shoot_pos):normalize()
+					else
+						shoot_dir = wpn:direction()
+					end
+
+					local r = try_fire_projectile_weapon(npc, wpn, shoot_pos, shoot_dir)
+					if r then
+						-- Adjust projectile direction based on info about enemy
+						if be and be:id() == v.enemy_id and v.enemy_velocity and v.enemy_velocity > 0 and v.enemy_direction and math.random() > 0.2 then
+							-- local be_pos = utils_obj.safe_bone_pos(be, "bip01_spine")
+							-- local r_pos = vector():set(r.position)
+
+							-- local v_r_x = r.velocity * r.direction.x
+							-- local v_r_y = r.velocity * r.direction.y
+							-- local v_r_z = r.velocity * r.direction.z
+
+							-- local v_be_x = v.enemy_velocity * v.enemy_direction.x
+							-- local v_be_y = v.enemy_velocity * v.enemy_direction.y
+							-- local v_be_z = v.enemy_velocity * v.enemy_direction.z
+
+							-- local t_x = (be_pos.x - r_pos.x) / (r.direction.x * v_r_x - v.enemy_direction.x * v_be_x)
+							-- local t_y = (be_pos.y - r_pos.y) / (r.direction.y * v_r_y - v.enemy_direction.y * v_be_y)
+							-- local t_z = (be_pos.z - r_pos.z) / (r.direction.z * v_r_z - v.enemy_direction.z * v_be_z)
+							-- local t = math.min(t_x, t_y, t_z)
+
+							-- local be_res_pos = vector():set(be_pos):mad(v.enemy_direction, t * v.enemy_velocity)
+							-- r.direction = vector():set(be_res_pos):sub(shoot_pos):normalize()
+
+							local max_time = 30
+							local target_time = 0
+							local target_dist = 0.4 ^ 2
+							local saved_pos
+							local function check_obstacles(pos, p_result_pos)
+								local ray_range = p_result_pos:distance_to(pos)
+								local ray = demonized_geometry_ray.geometry_ray({
+									ray_range = ray_range,
+									contact_range = r.damage_radius,
+									flags = 3,
+									ignore_object = npc,
+								})
+								local dir = vector():set(p_result_pos):sub(pos):normalize()
+								local res = ray:get(pos, dir)
+								
+								-- Dont shoot in direction if can be hurt by splash damage
+								local valid = not res.in_contact
+
+								-- Dont shoot in direction if can friendly fire
+								if res.object and IsStalker(res.object) and character_community(res.object) == character_community(npc) then
+									valid = false
+								end
+
+								-- Dont shoot if ray isnt reaching calculated position
+								if not demonized_geometry_ray.similar(ray_range, res.distance, 0.1) then
+									valid = false
+								end
+
+								return valid
+							end
+							local p_pos = vector():set(r.position)
+							while target_time <= max_time do
+								local be_pos = utils_obj.safe_bone_pos(be, "bip01_spine"):mad(v.enemy_direction, v.enemy_velocity * target_time)
+								local p_dir = vector():set(be_pos):sub(p_pos):normalize()
+								local p_result_pos = vector():set(p_pos):mad(p_dir, r.velocity * target_time)
+								local dist = p_result_pos:distance_to_sqr(be_pos)
+								if dist <= target_dist then
+									if not saved_pos then
+										local res_dir = vector():set(p_result_pos):sub(p_pos):normalize()
+										if check_obstacles(p_pos, p_result_pos) then
+											r.direction = res_dir
+											saved_pos = p_result_pos
+										end
+									else
+										if dist < saved_pos:distance_to_sqr(be_pos) then
+											local res_dir = vector():set(p_result_pos):sub(p_pos):normalize()
+											if check_obstacles(p_pos, p_result_pos) then
+												r.direction = res_dir
+												saved_pos = p_result_pos
+											end
+										else
+											break
+										end
+									end
+								end
+								target_time = target_time + 0.3
+							end
+						end
+
+						-- Add some frametime to time shot so it wont fire projectiles twice
+						v.time_shot = tg + device().time_delta * 5 
+					else
+						NPC_TRACKING[k] = nil
+					end
+				end
+			end
+		end
+	end
+end)
+
+check_npcs_enemies = throttle(function()
+	for k, v in pairs(NPC_TRACKING) do
+		local enemy = v.enemy_id and level.object_by_id(v.enemy_id)
+		if enemy then
+			local enemy_direction = v.enemy_position and enemy:position():sub(v.enemy_position)
+
+			-- If enemy is player and strafes too much - invalidate prediction and shoot at the current player position
+			if enemy_direction and v.enemy_id == AC_ID and enemy_direction:magnitude() < 0.23 then
+				enemy_direction = nil
+			end
+			v.enemy_velocity = enemy_direction and enemy_direction:magnitude() or 0
+			v.enemy_direction = enemy_direction and enemy_direction:normalize() or enemy:direction()
+			v.enemy_position = enemy:position()
+		end
+	end
+end, 100)
+
+function add_to_npc_tracking(npc, wpn, enemy)
+	if NPC_TRACKING[npc:id()] then
+		NPC_TRACKING[npc:id()].enemy_id = enemy and enemy:id()
+		return
+	end
+	NPC_TRACKING[npc:id()] = {
+		id = wpn:id(),
+		enemy_id = enemy and enemy:id(),
+		time_shot = 0,
+	}
+end
+
+function remove_from_npc_tracking(npc)
+	if NPC_TRACKING[npc:id()] then
+		NPC_TRACKING[npc:id()] = nil
+	end
+end
+
+function npc_on_update(npc)
+	if not (npc and npc:alive() and npc:best_enemy()) then
+		return remove_from_npc_tracking(npc)
+	end
+
+	local itm = npc:active_item()
+	if not itm then return remove_from_npc_tracking(npc) end -- skip if npc has no gun in hand
+	if not IsWeapon(itm) then return remove_from_npc_tracking(npc) end -- skip if npc isn't holding a weapon
+
+	local sec = itm:section()
+	local projectile = SYS_GetParam(1, sec, "projectile")
+	if not projectile then return remove_from_npc_tracking(npc) end -- skip if not projectile weapon
+
+	add_to_npc_tracking(npc, itm, npc:best_enemy())
+end
+
+function npc_on_death_callback(npc, who)
+	remove_from_npc_tracking(npc)
+end
+
+function npc_on_net_destroy(npc)
+	remove_from_npc_tracking(npc)
+end
+
+-- Saving states of things
+function save_state(m_data)
+
+	-- Save projectiles
+	local p = {}
+	for k, v in pairs(projectile_storage) do
+		if v.get_state and not v.destroyed then
+			p[#p + 1] = v.get_state()
+		end
+	end
+	m_data.aoe_particles = p
+end
+
+-- Loading states of things
+function load_state()
+	local m_data = alife_storage_manager.get_state()
+
+	-- Load projectiles
+	local p = m_data.aoe_particles or {}
+	for k, v in pairs(p) do
+		if not v.destroyed then
+			v.position = utils_data.string_to_vector(v.position)
+			v.direction = utils_data.string_to_vector(v.direction)
+
+			local projectile = Projectile(v)
+			projectile.current_bounce = v.current_bounce
+			projectile.homing_update_period = v.homing_update_period
+			projectile.homing_update_time = v.homing_update_time
+			projectile.distance = v.distance
+			projectile.distance_max = v.distance_max
+			projectile.force_destroy = v.force_destroy
+		end
+	end
+end
+
+-- Store last hit type for AoE and DoT patches
+local last_hit
+valid_last_hits = {
+	[hit.fire_wound] = true,
+}
+function remove_last_hit()
+	last_hit = nil
+end
+
+function npc_on_before_hit(npc, s_hit, bone_id, flags)
+	if not (s_hit.draftsman and s_hit.draftsman.id) then
+		return remove_last_hit()
+	end
+
+	if s_hit.draftsman:id() ~= AC_ID then
+		return remove_last_hit()
+	end
+
+	last_hit = hit(s_hit)
+end
+
+function monster_on_before_hit(monster, s_hit, bone_id, flags)
+	if not (s_hit.draftsman and s_hit.draftsman.id) then
+		return remove_last_hit()
+	end
+
+	if s_hit.draftsman:id() ~= AC_ID then
+		return remove_last_hit()
+	end
+
+	if not (monster.alive and monster:alive()) then
+		return remove_last_hit()
+	end
+
+	last_hit = hit(s_hit)
+end
+
+-- Wepl Hit Effects patch - remove sound on DoT hit
+if wepl_hit_effect then
+	if wepl_hit_effect.npc_on_hit_callback then
+		wepl_hit_effect_npc_on_hit_callback = wepl_hit_effect.npc_on_hit_callback
+		wepl_hit_effect.npc_on_hit_callback = function(...)
+			if last_hit and not valid_last_hits[last_hit.type] then
+				return
+			end
+			wepl_hit_effect_npc_on_hit_callback(...)
+		end
+	end
+
+	if wepl_hit_effect.monster_on_hit_callback then
+		wepl_hit_effect_monster_on_hit_callback = wepl_hit_effect.monster_on_hit_callback
+		wepl_hit_effect.monster_on_hit_callback = function(...)
+			if last_hit and not valid_last_hits[last_hit.type] then
+				return
+			end
+			wepl_hit_effect_monster_on_hit_callback(...)
+		end
+	end
+end
+
+function on_game_start()
+	AddUniqueCall(check_npcs_weapons)
+	AddUniqueCall(check_npcs_enemies)
+	RegisterScriptCallback("actor_on_first_update", load_state)
+	RegisterScriptCallback("actor_on_weapon_fired", actor_on_weapon_fired)
+	RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)
+	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
+	RegisterScriptCallback("npc_on_death_callback", npc_on_death_callback)
+	RegisterScriptCallback("npc_on_net_destroy", npc_on_net_destroy)
+	RegisterScriptCallback("npc_on_update", npc_on_update)
+	RegisterScriptCallback("save_state", save_state)
+end
+
+assert(AddScriptCallback, "Anomaly 1.5.2 is required for demonized_aoe.script")
+
+AddScriptCallback("on_aoe_init")
+AddScriptCallback("on_aoe_update")
+AddScriptCallback("on_aoe_explode")
+AddScriptCallback("on_aoe_hit")
+AddScriptCallback("on_aoe_destroy")
+
+AddScriptCallback("on_aoe_before_explode")
+AddScriptCallback("on_aoe_before_hit")
+AddScriptCallback("on_aoe_before_destroy")
+
+AddScriptCallback("on_projectile_init")
+AddScriptCallback("on_projectile_update")
+AddScriptCallback("on_projectile_before_homing")
+AddScriptCallback("on_projectile_before_bounce")
+AddScriptCallback("on_projectile_bounce")
+AddScriptCallback("on_projectile_before_hit")
+AddScriptCallback("on_projectile_hit")
+AddScriptCallback("on_projectile_before_destroy")
+AddScriptCallback("on_projectile_destroy")

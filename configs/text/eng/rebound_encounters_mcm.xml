@@ -1,0 +1,334 @@
+<?xml version="1.0" encoding="windows-1251"?>
+
+<!-- 
+	MCM
+-->
+<string_table>
+    <string id="ui_mcm_rebound_encounters_title">
+        <text>RE:Bound Encounters: dynamic spawner for RE:Spawn Mutants</text>
+    </string>
+
+    <string id="ui_mcm_menu_rebound_encounters">
+        <text>RE:Bound Encounters</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_spawn_time_delay_min">
+        <text>Minimum Time Between Spawns (in-game hours)</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_spawn_time_delay_max">
+        <text>Maximum Time Between Spawns (in-game hours)</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_safe_radius">
+        <text>Player Safe Radius</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_day_start">
+        <text>Day Start Time</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_day_end">
+        <text>Day End Time</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_boss_spawn_probability">
+        <text>Success chance for a boss mutant to spawn</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_predator_spawn_probability">
+        <text>Chance for a spawn to be aggressive</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_wipe_mutants_on_level_change">
+        <text>Despawn all mutants before switching level</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_ignore_smart_population">
+        <text>Ignore Smart population limit when spawning (more spawns)</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_all_maps_spawning">
+        <text>No area-specific restrictions for selected weaker mutants</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_boss_is_night_only">
+        <text>Boss Mutants Spawn at night only</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_spawn_reserve">
+        <text>Ensure slots are consistently reserved on Smarts (lesser spawns)</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_goodwill_penalty">
+        <text>Enable goodwill penalty on killing a passive creature from RE:Spawn Pack E</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_sheltered_indicator">
+        <text>Enable sheltered status indicator</text>
+    </string>
+    
+    <string id="ui_mcm_rebound_encounters_enable_debug">
+        <text>Enable Debug</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_delete_mutants_instructions">
+        <text>With Debug enabled, pressing the "P" key on your keyboard while in-game will delete all RE:Spawn mutants. Use this if you plan to uninstall some mutants from your game. Save after deleting spawns.</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_random_vanilla_mutants">
+        <text>Enable random vanilla mutant spawns after a period of downtime</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_random_vanilla_mutants_description">
+        <text>Squads of vanilla mutants will spawn near the player after a period of not fighting with a mutant. Chance of spawning increases as downtime increases. Different and stronger mutants will spawn during night time. Adjust the accumulator divisor below. Lesser value = faster spawn chance accumulates</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_enable_accumulator_reset_on_npc_attack">
+        <text>Reset Spawn accumulator on combat with Stalkers</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_accumulator_threshold">
+        <text>Accumulator Divisor</text>
+    </string>
+
+
+    
+
+    <string id="ui_mcm_rebound_encounters_toggle_individual_mutant_spawning">
+        <text>Toggle each mutant below to control whether it can spawn in your game.</text>
+    </string>
+
+    <string id="ui_mcm_rebound_encounters_respawn_letalka">
+    <text>Enable Letalka</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_mizgir">
+        <text>Enable Mizgir</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_tarakan">
+        <text>Enable Tarakan</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_pyat">
+        <text>Enable Pyat</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_ameba">
+        <text>Enable Ameba</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_hayzed">
+        <text>Enable Hayzed</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_krisa">
+        <text>Enable Krisa</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_strekoza">
+        <text>Enable Strekoza</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_vebber">
+        <text>Enable Vebber</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_doberman">
+        <text>Enable Doberman</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_komar">
+        <text>Enable Komar</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_jugger">
+        <text>Enable Jugger</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_geruda">
+        <text>Enable Geruda</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_obrazet">
+        <text>Enable Obrazet</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_rogach">
+        <text>Enable Rogach</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_silvan">
+        <text>Enable Silvan</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_volk">
+        <text>Enable Volk</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_zhaba">
+        <text>Enable Zhaba</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_gonchaya">
+        <text>Enable Gonchaya</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_muskul">
+        <text>Enable Muskul</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_svinya">
+        <text>Enable Svinya</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_tark">
+        <text>Enable Tark</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_zeddev">
+        <text>Enable Zeddev</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_burenka">
+        <text>Enable Burenka</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_duriel">
+        <text>Enable Duriel</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_kannibal">
+        <text>Enable Kannibal</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_predadar">
+        <text>Enable Predadar</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_zanoza">
+        <text>Enable Zanoza</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_iskatel">
+        <text>Enable Iskatel</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_bayun">
+        <text>Enable Bayun</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_koyot">
+        <text>Enable Koyot</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_latsertian">
+        <text>Enable Latsertian</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_biryuk">
+        <text>Enable Biryuk</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_borya">
+        <text>Enable Borya</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_karlik">
+        <text>Enable Karlik</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_alghoul">
+        <text>Enable Alghoul</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_vendigo">
+        <text>Enable Vendigo</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_yozhik">
+        <text>Enable Yozhik</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_watchmen">
+        <text>Enable Watchmen</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_bibliotekar">
+        <text>Enable Bibliotekar</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_jumper">
+        <text>Enable Jumper</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_psysucker">
+        <text>Enable Psysucker</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_bones">
+        <text>Enable Bones</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_fev">
+        <text>Enable Fev</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_claw">
+        <text>Enable Claw</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_fist">
+        <text>Enable Fist</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_jaw">
+        <text>Enable Jaw</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_scales">
+        <text>Enable Scales</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_scuttler">
+        <text>Enable Scuttler</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_temple">
+        <text>Enable Temple</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_fur">
+        <text>Enable Fur</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_grotesque">
+        <text>Enable Grotesque</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_fang">
+        <text>Enable Fang</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_slizen">
+        <text>Enable Slizen</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_ratking">
+        <text>Enable Ratking</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_spectre">
+        <text>Enable Spectre</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_cerb">
+        <text>Enable Cerb</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_chicken">
+        <text>Enable Chicken</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_hog">
+        <text>Enable Hog</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_pig">
+        <text>Enable Pig</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_rooster">
+        <text>Enable Rooster</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_rotan">
+        <text>Enable Rotan</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_canid">
+        <text>Enable Canid</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_medwed">
+        <text>Enable Medwed</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_bear">
+        <text>Enable Bear</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_deer">
+        <text>Enable Deer</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_fox">
+        <text>Enable Fox</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_shepherd">
+        <text>Enable Shepherd</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_nechto">
+        <text>Enable Nechto</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_salamandra">
+        <text>Enable Salamandra</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_yurskiy">
+        <text>Enable Yurskiy</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_grizli">
+        <text>Enable Grizli</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_poltersucker">
+        <text>Enable Poltersucker</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_rezkost">
+        <text>Enable Rezkost</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_terapus">
+        <text>Enable Terapus</text>
+    </string>
+    <string id="ui_mcm_rebound_encounters_respawn_hare">
+        <text>Enable Hare</text>
+    </string>
+    
+    <string id="ui_mcm_rebound_encounters_something">
+        <text>Place holder</text>
+    </string>    
+</string_table>
