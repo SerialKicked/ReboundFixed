@@ -204,9 +204,7 @@ function try_to_spawn()
         max_active_spawns = 4
     end
     max_active_spawns = max_active_spawns + player_rank_value
-    number_of_spawn_attempts = max_active_spawns
-
-    number_of_spawn_attempts = number_of_spawn_attempts
+    number_of_spawn_attempts = 1  -- Spawn at most one squad per timer cycle
 
     local surge_active = surge_started()
 
@@ -220,6 +218,23 @@ function try_to_spawn()
             pr("Spawning mutants: %s attempt", number_of_spawn_attempts)
         end
 
+        -- Pre-compute boss and non-boss pools once (instead of rebuilding on every attempt)
+        local boss_pool = {}
+        local non_boss_pool = {}
+        for _, squad in ipairs(squads_to_spawn) do
+            if squad.is_boss_mutant then
+                boss_pool[#boss_pool + 1] = squad
+            else
+                non_boss_pool[#non_boss_pool + 1] = squad
+            end
+        end
+
+        -- Build occupied smart set for O(1) lookup (instead of O(n) scan per smart terrain)
+        local occupied_smarts = {}
+        for _, spawn in ipairs(active_spawns) do
+            occupied_smarts[spawn.smart_id] = true
+        end
+
         for i = 1, number_of_spawn_attempts do
             -- Check maximum active spawns before each attempt
             local current_active_spawns = #active_spawns
@@ -227,7 +242,7 @@ function try_to_spawn()
                 pr("Maximum active spawns reached: %s", count_available_smart_terrains())
                 break
             else
-                spawn_mutants()  -- Call function to spawn mutants 
+                spawn_mutants(boss_pool, non_boss_pool, occupied_smarts)  -- Call function to spawn mutants 
             end
         end
     end
@@ -287,12 +302,12 @@ function find_random_non_boss()
 end
 
 -- Main spawn mutants function
-function spawn_mutants()
+function spawn_mutants(boss_pool, non_boss_pool, occupied_smarts)
     local has_spawned = false
 
-    -- Randomly select a boss and a non-boss squad
-    local boss_random_squad = find_random_boss()
-    local random_squad = find_random_non_boss()
+    -- Select a random squad from the pre-computed boss and non-boss pools
+    local boss_random_squad = boss_pool and #boss_pool > 0 and boss_pool[math.random(1, #boss_pool)] or nil
+    local random_squad = non_boss_pool and #non_boss_pool > 0 and non_boss_pool[math.random(1, #non_boss_pool)] or nil
     local chosen_squad = nil
 
     -- Loop through available smart terrains to find a suitable one
@@ -306,14 +321,8 @@ function spawn_mutants()
                 --local smart_cur_pop = simboard_t.population
                 --local smart_max_pop = smart.max_population - spawn_reserve
 
-                -- Check if a spawn already exists in the given smart
-                local spawn_exists = false
-                for _, spawn in ipairs(active_spawns) do
-                    if spawn.smart_id == selected_smart_id then
-                        spawn_exists = true
-                        break
-                    end
-                end
+                -- O(1) occupied-smart lookup using the pre-built hash set
+                local spawn_exists = occupied_smarts[selected_smart_id]
 
                 -- Check population limits or override if enabled
                 --local allow_pop_spawn = smart_cur_pop < smart_max_pop
@@ -1418,39 +1427,6 @@ function actor_on_update()
     end
 
     --show_move_state()
-end
-
-function game_timer(state, id)
-    if state == "mark" then
-        if not id then return end
-        local found = false
-        for _, entry in ipairs(marked_times) do
-            if entry.id == id then
-                entry.time = game.get_game_time()
-                found = true
-                break
-            end
-        end
-
-        if not found then
-            table.insert(marked_times, {id = id, time = game.get_game_time()})
-        end
-
-    elseif state == "check" then
-        if not id then return end
-        for _, entry in ipairs(marked_times) do
-            if entry.id == id then
-                local time_diff_seconds = game.get_game_time():diffSec(entry.time)
-                local time_diff_minutes = math.floor(time_diff_seconds / 60)
-                return time_diff_minutes
-            end
-        end
-        game_timer("mark", id)
-        return 0
-
-    elseif state == "clear" then
-        marked_times = {}
-    end
 end
 
 function release_distant_passive_fauna(distance)
@@ -2718,32 +2694,28 @@ function spawn_mutant_squad_on_eligible_smart()
     local simulation_squads = get_list_from_ltx(plugin_file_name, simulation_section)
 
     if simulation_squads and #simulation_squads > 0 then
-        -- Iterate through all objects to find smart terrains
-        for i = 1, MAX_SMART_ID do
-            local smart = alife_object(i)
+        -- Reuse the pre-built available_smart_terrains list instead of a full 65K ALife scan.
+        -- available_smart_terrains already guarantees population 0 and outside safe radius.
+        for _, smart_id in ipairs(available_smart_terrains[current_map_name] or {}) do
+            local smart = alife_object(smart_id)
 
-            if smart and (smart:clsid() == clsid.smart_terrain) then
-                local smart_level_name = get_se_obj_level_name(smart)
-                if smart_level_name == current_map_name then
-                    local smart_cur_pop = count_squads_in_radius("all", smart.position, 40)
-                    local smart_name = smart:name() or smart:section_name() or "<empty>"
+            if smart then
+                local smart_name = smart:name() or smart:section_name() or "<empty>"
+                local is_in_fov = is_smart_in_fov(smart.position)
 
-                    local outside_safe_radius = se_obj_outside_spawn_radius(smart, safe_radius)
-                    local is_in_fov = is_smart_in_fov(smart.position)
-
-                    -- Check if the smart terrain has 0 population, is outside safe radius, and is not in fov
-                    if smart_cur_pop == 0 and outside_safe_radius and not is_in_fov then
-                        -- Spawn the squad on the eligible smart terrain
-                        simulation_squad_to_spawn = simulation_squads[math.random(1, #simulation_squads)]
-                        local squad = SIMBOARD:create_squad(smart, simulation_squad_to_spawn)
-                        if squad then
-                            pr("-- Re:Bound - Spawning extra vanilla squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart.id)
-                        else
-                            pr("! Re:Bound - Failed to spawn squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart.id)
-                        end
+                -- Check that the smart terrain is not currently in the player's field of view
+                if not is_in_fov then
+                    -- Spawn cap: only one squad per call
+                    simulation_squad_to_spawn = simulation_squads[math.random(1, #simulation_squads)]
+                    local squad = SIMBOARD:create_squad(smart, simulation_squad_to_spawn)
+                    if squad then
+                        pr("-- Re:Bound - Spawning extra vanilla squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart_id)
+                        return
                     else
-                        pr("! Re:Bound - Smart [%s] (ID: %s) is not eligible for spawning (population: %s, outside radius: %s, is in fov: %s)", smart_name, smart.id, smart_cur_pop, tostring(outside_safe_radius), tostring(is_in_fov))
+                        pr("! Re:Bound - Failed to spawn squad [%s] on smart [%s] (ID: %s)", simulation_squad_to_spawn, smart_name, smart_id)
                     end
+                else
+                    pr("! Re:Bound - Smart [%s] (ID: %s) is not eligible for spawning (is in fov: %s)", smart_name, smart_id, tostring(is_in_fov))
                 end
             end
         end
