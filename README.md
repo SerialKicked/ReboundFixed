@@ -1,4 +1,4 @@
-This is a fixed version of the [ReBound: Ecounters](https://www.moddb.com/mods/stalker-anomaly/addons/rebound-encounters1) Addon for Stalker Anomaly. It fixes issues plaguing bother 1.7 (the version this is based on) and more recent versions. This specific 1.7 version was picked due to it having less issues to fix.é<a&  ZQqsq<s<Q<S>&  aQ<2AZq<EDZS  AQx
+This is a fixed version of the [ReBound: Ecounters](https://www.moddb.com/mods/stalker-anomaly/addons/rebound-encounters1) Addon for Stalker Anomaly. It fixes issues plaguing bother 1.7 (the version this is based on) and more recent versions. This specific 1.7 version was picked due to it having less issues to fix than recent versions.
 
 # ReBound: Encounter 1.7: Fixed.
 - Fixed spawn rate so the map doesn't get full of monsters every 4 hours (favor a setting like 4-10 hours between spawns in settings)
