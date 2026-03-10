@@ -351,10 +351,7 @@ function spawn_mutants(boss_pool, non_boss_pool, occupied_smarts)
                     
                     if squad then
                         -- Handle predator flag for the squad
-                        local spawn_is_predator = (math.random(1, 100) <= predator_spawn_probability)
-                        if chosen_squad.is_predator_mutant or spawn_is_predator then
-                            chosen_squad.is_predator_mutant = true
-                        end
+                        local spawn_is_predator = chosen_squad.is_predator_mutant or (math.random(1, 100) <= predator_spawn_probability)
 
                         -- Add the new spawn to active_spawns
                         table.insert(active_spawns, { 
@@ -364,7 +361,7 @@ function spawn_mutants(boss_pool, non_boss_pool, occupied_smarts)
                             sec = squad_sec,
                             is_night_mutant = chosen_squad.is_night_mutant, 
                             is_boss_mutant = chosen_squad.is_boss_mutant,
-                            is_predator_mutant = chosen_squad.is_predator_mutant
+                            is_predator_mutant = spawn_is_predator
                         })
 
                         -- Update boss count and send message if a boss spawned
@@ -405,6 +402,7 @@ function spawn_mutants(boss_pool, non_boss_pool, occupied_smarts)
                         end
                         -- Set has_spawned to true and exit loops to stop further spawning attempts
                         has_spawned = true
+                        occupied_smarts[selected_smart_id] = true -- Mark this smart as occupied in the hash set
                         break
                     end
                 end
@@ -1416,7 +1414,7 @@ function actor_on_update()
 
     if not cooldown_timer("check", "check_safety") then
         check_player_safety()
-        cooldown_timer("mark", "check_safety", 1)
+        cooldown_timer("mark", "check_safety", 3)
     end
 
     if not cooldown_timer("check", "rumor") then
@@ -2075,20 +2073,26 @@ function force_rush_to_target(npc, enemy, flags)
     if special_event_started() then
         if is_safe_zone == false then
             if matches_section(npc:section())  and (enemy:id() ~= db.actor:id()) then
-                local far_from_actor = (npc:position():distance_to(db.actor:position()) > 15)
+                local far_from_actor = (npc:position():distance_to(db.actor:position()) > 250)
                 if far_from_actor then
                     flags.override = true  -- Prevent attack
                     flags.ret_value = false
+                else
+                    flags.override = false  -- Allow attack
+                    flags.ret_value = true
                 end
             end
         end
     end
     if player_safe == false then
       if is_predator(npc) and (enemy:id() ~= db.actor:id()) then
-        local far_from_actor = (npc:position():distance_to(db.actor:position()) > 20)
+        local far_from_actor = (npc:position():distance_to(db.actor:position()) > 500)
         if far_from_actor then
             flags.override = true
             flags.ret_value = false
+        else
+            flags.override = false
+            flags.ret_value = true
         end
       end
     end
