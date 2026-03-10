@@ -121,13 +121,13 @@ function fetch_values()
     difficulty_level = level.get_game_difficulty()
     
     if difficulty_level == 0 then -- Novice
-        difficulty_value = 0.3
+        difficulty_value = 1
     elseif difficulty_level == 1 then -- Stalker
-        difficulty_value = 0.4
+        difficulty_value = 2
     elseif difficulty_level == 2 then -- Veteran
-        difficulty_value = 0.5
+        difficulty_value = 3
     elseif difficulty_level == 3 then -- Master
-        difficulty_value = 0.6
+        difficulty_value = 4
     end
 
     collect_squads_to_spawn()
@@ -199,12 +199,12 @@ function try_to_spawn()
     -- adjust spawns depending on game difficulty
     local player_rank_value = get_rank_value(db.actor:character_rank())
     max_active_spawns = 0
-    max_active_spawns = round(count_available_smart_terrains() * difficulty_value) -- spawn max based on smart terrain population on map
+    max_active_spawns = round(count_available_smart_terrains()) -- spawn max based on smart terrain population on map
     if max_active_spawns < 4 then
         max_active_spawns = 4
     end
-    max_active_spawns = max_active_spawns + player_rank_value
-    number_of_spawn_attempts = 1  -- Spawn at most one squad per timer cycle
+    max_active_spawns = max_active_spawns
+    number_of_spawn_attempts = 1 + difficulty_value -- Spawn at most one squad per experience per timer cycle
 
     local surge_active = surge_started()
 
