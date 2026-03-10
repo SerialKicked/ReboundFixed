@@ -19,5 +19,8 @@ This is a fixed version of the [ReBound: Ecounters](https://www.moddb.com/mods/s
 
 # Installation
 - Override the files or create a mod overriding the files.
+- If using GAMMA, move the `GAMMA_FIX\xr_conditions.script` file to `gamedata\scripts\xr_conditions.script`
+
+(no i'm not making an installer, if you somehow ended up here, you can manage)
 
 Savegame-compatible with nomal Rebound: Encounter 1.7 (not with more recent versions)
