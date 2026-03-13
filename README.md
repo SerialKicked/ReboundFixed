@@ -1,11 +1,11 @@
 This is a fixed version of the [ReBound: Ecounters](https://www.moddb.com/mods/stalker-anomaly/addons/rebound-encounters1) Addon for Stalker Anomaly. It fixes issues plaguing both 1.7.8 (the version this is based on) and more recent versions. This specific 1.7.8 version was picked due to it having less issues to fix than recent versions.
 
 ## ReBound: Encounter 1.7.8 [Working as Intended Edition]
-- Fixed spawn rate so the map doesn't get full of monsters every 4 hours (favor a setting like 4-10 hours between spawns in settings)
-- Fixed Predator behavior so not everything becomes a predator after 3-4 spawn (set predators rate to 20%)
-- Fixed Predator distance threshold (50 meters -> 500) behavior so they no longer consider player character as their sole enemy until they went through a whole base
+- Changed spawn rate logic to better scale with progression while preventing the map from get full of monsters every 4 hours
+- Changed Predator distance threshold (50 meters -> 500) so they no longer consider player character as their sole enemy even when they'd need to go through a whole base to reach them
 - Massive performance improvements in spawning logic
-- More stable overall.
+- Fixed Predator spawn logic so not everything becomes a predator after 3-4 spawn (predator % setting matters now, favor something like 20%)
+- More stable experience overall, with no lag spikes.
 - Added specific GAMMA fix to prevent the "i changed map, and everything crash with no log" caused by Rebound:Encounters.
 
 ## Details of the encountered issues in the mod and their fixes:
